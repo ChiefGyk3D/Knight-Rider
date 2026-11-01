@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: Apache-2.0
+# Shell lint and the repository's own checks (the address check and its test, through tests/run.sh) are
+# ChiefGyk3D/git-your-ship-together's bash-ci.yml; it reports its gate as `CI green`, here `ci / CI green`.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  ci:
+    uses: ChiefGyk3D/git-your-ship-together/.github/workflows/bash-ci.yml@f344c638e1316d43514a41e4a22f172583c271fc # v1.26.0
+    permissions:
+      contents: read
+    with:
+      shfmt-args: "-i 4 -ci"
+      test-command: ./tests/run.sh
+      egress-policy: block

@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+# Placeholder example only. The real allowlist is the user's private data: it lives outside this repository,
+# at a path the tool is configured with, and is never committed. The format below is a sketch and may change
+# while the design is open. Every entry here is the word "placeholder", not an address.
+allowlist:
+  - destination: placeholder
+    network: tor
+    note: placeholder entry for a Tor onion service
+  - destination: placeholder
+    network: i2p
+    note: placeholder entry for an I2P eepsite

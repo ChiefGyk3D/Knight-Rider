@@ -1,0 +1,46 @@
+# Private data: the real allowlist never enters this repository.
+allowlist.yaml
+allowlist.yml
+allowlist.json
+allowlist.txt
+*.allowlist
+allowlist*.local.*
+!examples/allowlist.example.yaml
+
+# Databases, logs, captured pages and screenshots from any run
+*.db
+*.sqlite
+*.sqlite3
+*.log
+logs/
+captures/
+captured/
+pages/
+snapshots/
+*.har
+*.mhtml
+
+# Secrets and local config
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Python
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
