@@ -128,7 +128,7 @@ does not exist yet (the repository today contains only the address check).
 | 3 | K02b | T2: worker breach, then container escape | Critical | A browser exploit, then a runtime escape | Rootless, positive host-observed inventory, daemon and worker split | planned |
 | 4 | K02c | T3: Workstation, Gateway and hypervisor crossings | Critical | Browser exploit, then a VM-boundary or Gateway flaw | Generated domain definitions, host-observed effective inventory, host choice (K10) | planned |
 | 5 | K03 | Real IP or identity leak | High | A page that triggers a request, a client bug or a wiring mistake | Tier-specific network invariants observed at the enforcement point | planned |
-| 6 | K04 | Allowlist matching bypass, redirect, or widening by persuasion | High | A parser difference, a redirect, or a plausible message | Canonical match, per-hop re-check, human-only promotion | planned |
+| 6 | K04 | Allowlist matching bypass, redirect, unbrokered page-initiated requests, or widening by persuasion | High | A parser difference, a redirect, an allowlisted page, or a plausible message | Canonical match, every request class brokered before dispatch, human-only promotion | planned |
 | 7 | K17 | Public repository leakage: addresses, allowlist content, unfixed detail | High | A contributor or agent mistake | Address check in CI, private tracker, placeholders only | **exists** |
 | 8 | K07 | Log and stored data leave the machine: backup, sync, commit, transcript | High | A sync or backup job, or a mistaken commit | Resolved paths checked, exclusions, exact schema, retention | planned |
 | 9 | K05 | Abusive content met, stored or transcribed | High | Fetching a page; no attacker needed | Text-only, nothing persisted; stop-and-report is gate #4 | gate #4 pending |
@@ -136,9 +136,9 @@ does not exist yet (the repository today contains only the address check).
 | 11 | K09 | Supply chain: browser, daemons, images, dependencies | High | A compromised or neglected upstream | Parse-and-fail pinning policy, separate provenance check | planned |
 | 12 | K10 | The Whonix host question | High | A VM escape, or credentials left on the shared host | Dedicated host or hypervisor, least-privilege libvirt user | maintainer decision |
 | 13 | K08 | Discovery lane: fan-out past one hop, and second-order injection | High | A page with a lead, a later read of the store | Exact three-field schema, one-hop rule, escaped reads | planned |
-| 14 | K04b | Allowlist file substitution and same-user tampering | High | Same-user code execution (K02a gives it) | Safe open and descriptor read; same-user tampering accepted | planned; residual accepted |
-| 15 | K12 | Ephemerality fails: state survives a run or links runs | Medium | A prior hostile page or a failed cleanup | Clean-state attestation before every fetch | planned |
-| 16 | K11 | Hostile bytes parsed in the core | Medium | A page or malformed response | Parse only inside the sandbox, memory-safe parser, fuzz | planned |
+| 14 | K04b | Allowlist file substitution and same-user tampering | High | Same-user code execution (K02a gives it) | Constrained symlink-free resolution, descriptor read; same-user tampering accepted | planned; residual accepted |
+| 15 | K12 | Ephemerality fails: state survives a run or links runs | Medium | A prior hostile page or a failed cleanup | One fetch per instance, host-controlled evidence only, poisoned on any failure | planned |
+| 16 | K11 | Hostile bytes parsed in the core, and the sandbox-to-host result channel | Medium | A page, or a compromised sandbox | Length-prefixed closed-schema frame, fail closed, no page bytes on error | planned |
 | 17 | K16 | Intelligence integrity: lures, cloaked or poisoned pages | Medium | An operator who wants to mislead | Provenance in every result, no automated action | planned |
 | 18 | K07b | Log and stored data read by a local same-user process | Medium | Same-user code execution | Modes, no bodies, retention; partly accepted | planned |
 | 19 | K13 | The tool is distinguishable or can be cloaked against | Medium | An operator who profiles visitors | Stock configuration, request discipline; accepted in part | inferred; manual |
@@ -232,7 +232,7 @@ reach it; a non-root sandbox user; ephemeral sessions (K12); engines kept curren
   Setups page]. This is the weakest tier by decision [D].
 - **Impact.** Critical. **Prerequisite.** One browser exploit, delivered by any page. Light.
 - **Mitigation.** Run T1 only under a dedicated OS account that has none of the maintainer's credentials, no access to
-  the maintainer's home directory, agent sockets or session bus, no elevated rights, and its own runtime directory;
+  the maintainer's home directory, agent sockets or session bus, no elevated rights, and its own runtime directory; the Tor client runs under a different identity from the browser (see K03);
   add process confinement where the platform offers it [I]. Document that T1 under the daily account is the same as no
   isolation.
 - **Verification.** Planned, run from the host by the maintainer or an administrator account, not by the tool: enumerate
@@ -257,8 +257,11 @@ reach it; a non-root sandbox user; ephemeral sessions (K12); engines kept curren
   network (A1); the daemon container holds no secret and no write path to the worker's state.
 - **Verification.** Planned, host-observed: for the running worker and daemon containers, read from the host the
   effective mounts, descriptors, namespaces, capability and no-new-privileges flags, syscall-filter mode, devices,
-  interfaces and routes (from the kernel's per-process records and the runtime's own inspection output) and compare each
-  with the recorded expected set; any extra item fails. The generated definition is also compared, but the running
+  interfaces and routes, **and every listening socket and every published port mapping** (from the kernel's
+  per-process records and the runtime's own inspection output) and compare each with the recorded expected set; any
+  extra item fails. The set is closed for listeners: each is an exact protocol, bind address, port, network namespace and
+  owning process identity, and one additional listener, a wildcard bind, a host-published port or an alternate transport
+  makes the check fail and startup refuse. The generated definition is also compared, but the running
   state is what counts.
 - **Residual.** An unpatched runtime or kernel flaw defeats this. Reopen on any published escape for the runtime in use.
 
@@ -296,8 +299,14 @@ reach it; a non-root sandbox user; ephemeral sessions (K12); engines kept curren
 - **Mitigation.** Name resolution is done by the proxy (SOCKS with remote resolution) and never locally. The fetch path
   opens no other process: no external viewers, plugins or document handlers. Non-text content types are refused (K15).
   Each tier states its network invariant and the invariant is checked where it is enforced, not inside the guest:
-  - **T1.** The dedicated account's outbound traffic is restricted at the host firewall to the browser bundle's own Tor
-    client; there is no route for any subprocess or browser component to anywhere else.
+  - **T1.** When the browser and its Tor client run as one account, no host-side rule can tell them apart. A rule that
+    lets the Tor client reach its relays also lets a compromised browser reach those relays directly, from the real
+    address, and destination counters cannot show which process originated the traffic. T1 therefore **cannot make the
+    claim** that the browser has no route except through Tor unless the host enforces a separation it can observe: the
+    Tor client and the browser run under distinct enforcement identities (separate accounts, or separate network
+    namespaces or control groups), only the Tor identity may own sockets to the outside, and the browser identity can
+    reach only a local proxy endpoint. If that separation is not set up, T1 is documented as unable to claim the
+    invariant, and the leak-by-browser-flaw case for T1 is accepted residual risk.
   - **T2.** The worker's network namespace has one interface, on the internal network, with routes only to the daemons'
     proxy ports and no resolver; the daemon container is the only workload with outside egress, and its egress excludes
     the host, the local network and link-local ranges.
@@ -309,64 +318,86 @@ reach it; a non-root sandbox user; ephemeral sessions (K12); engines kept curren
   own cost: no stream isolation, community support only [V]. The design must pick one, and the maintainer accepts the
   result. i2pd is configured not to publish itself or relay transit traffic where its configuration allows [I; verify
   against the i2pd documentation].
-- **Verification.** Planned, at the enforcement point and outside the guest: (a) T1: a packet capture or firewall counter
-  on the host showing that traffic from the dedicated account goes only to the Tor client's peers, including during a
-  page that loads many subresources. (b) T2: from the host, enter the worker's namespace and list interfaces and routes
+- **Verification.** Planned, at the enforcement point and outside the guest: (a) T1: from the browser's actual process
+  identity (not the Tor client's), attempt direct TCP, UDP, DNS, IPv6 and ICMP to a destination that the Tor identity
+  is permitted to reach and to arbitrary destinations; every direct attempt must fail while traffic through the local
+  proxy succeeds. A capture that shows only permitted relay destinations does not pass this check, because it cannot
+  show who originated them; the check fails if the browser identity can reach a permitted relay directly. (b) T2: from the host, enter the worker's namespace and list interfaces and routes
   (expected: one interface, proxy routes only); from the host firewall and connection-tracking view, confirm the daemon
   container's egress and that the worker has none. (c) T3: the bridge and Gateway firewall views described in K02c.
   Negative tests for every interface and destination class (loopback, local network, link-local, the metadata range,
   IPv6, ICMP, DNS on both transports): each fails closed. Effective DNS handling: the recording proxy shows host names it
   resolved remotely and no resolver query leaves anywhere else. Subprocess coverage: the T1 and T2 checks run while a
   stub page forces subresource and helper-process activity.
-- **Residual.** T1: any browser flaw can leak. All tiers: the local network sees Tor or I2P use [W]. Direct I2P peer
+- **Residual.** T1: any browser flaw can leak unless the separate-identity arrangement above is in place and observed. All tiers: the local network sees Tor or I2P use [W]. Direct I2P peer
   visibility is accepted exposure unless the I2P-through-Tor path is chosen.
 
-### K04. Allowlist matching bypass, redirect, or widening by persuasion
+### K04. Allowlist matching bypass, redirect, unbrokered requests, or widening by persuasion
 
 - **Abuse case.** (a) A look-alike destination passes the match: a different host with the same visible prefix, user
   information in the URL, a trailing dot, case or encoding variants, an unexpected port or scheme. (b) An allowlisted page
   redirects to a destination that is not on the list, or to the ordinary internet. (c) A page, or the injected AI,
-  persuades the maintainer to add a destination.
+  persuades the maintainer to add a destination. (d) An allowlisted page causes requests the user never asked for:
+  images, stylesheets, frames, scripts, fonts, refresh directives, prefetching, or requests made by browser helper
+  processes. Each may name a destination that is not on the list. Checking redirects does not cover them.
 - **Impact.** High: it removes default deny, which every other control assumes.
-- **Prerequisites.** (a) and (b): a page and a parser difference. (c): a plausible message.
+- **Prerequisites.** (a) and (b): a page and a parser difference. (c): a plausible message. (d): an allowlisted page.
 - **Mitigation.** Parse once into a canonical host, port and scheme; match exactly against canonical entries; reject
   anything the parser cannot canonicalize. Allow only the schemes the networks need. Redirects are not followed
   automatically; each hop is re-checked against the allowlist and counted against a small cap; a redirect to a
   non-allowlisted or non-network destination is refused. The tool has no verb that edits the allowlist, and promotion of a
   discovered destination is a human act made outside any tool the AI can call (D7). The denial message gives no hint
   about how to widen the list.
+  **Broker invariant.** Every network request, of every class (navigation, redirect, subresource, prefetch, refresh,
+  helper-process request, and discovery probe), passes through one policy-enforcing request path that authorizes it
+  against the allowlist **before** dispatch. Request classes that cannot be brokered are disabled: the sandbox loads
+  no subresources, runs no script, and does no prefetch or speculative connection, and the fetch returns the document
+  text only. Where a tier cannot enforce this (T1 drives a full browser, so brokering depends on browser configuration
+  that a compromised browser can bypass), the model does not claim it: T1 is recorded as unable to guarantee the
+  invariant against a compromised browser, and for T2 and T3 the enforcement point is the proxy the sandbox must use.
 - **Verification.** Planned test: a table of hostile destination forms, each denied, and of valid forms, each passed; a
-  redirect-to-forbidden test and a redirect-loop test; a test that no tool verb writes the allowlist path.
-- **Residual.** Judgment of the maintainer on (c). Reopen if the allowlist format gains patterns or wildcards.
+  redirect-to-forbidden test and a redirect-loop test; a test that no tool verb writes the allowlist path. Planned
+  **request-class fixture**: an allowlisted document that tries each request class (image, stylesheet, frame, script,
+  font, refresh, prefetch, helper-process request, and a discovery probe) toward a forbidden destination; assert zero
+  broker dispatches and zero proxy or network observations for that destination, observed at the proxy, not in the guest.
+- **Residual.** Judgment of the maintainer on (c). T1 cannot guarantee (d) against a compromised browser. Reopen if the
+  allowlist format gains wildcards, or if any request class is ever enabled.
 
 ### K04b. Allowlist file substitution and same-user tampering
 
 This is separate from K04. K04 is about what the matcher accepts; K04b is about whether the file the matcher reads is
 the file the maintainer meant.
 
-- **Abuse case.** (a) The configured path is a symbolic link, or sits under a directory someone else can change, or
-  points at an unintended regular file. (b) The path or one of its components is replaced between a check and the read.
-  (c) A process running as the same user rewrites the file.
+- **Abuse case.** (a) The configured path is a symbolic link at any position, or sits under a directory someone else can
+  change, or points at an unintended regular file. (b) The path or any of its components is replaced during resolution,
+  so the open reaches a different tree than the one checked. (c) A process running as the same user rewrites the file.
 - **Impact.** High: the allowlist decides what the tool may touch.
 - **Prerequisites.** (a) and (b): the ability to write the path or a parent. (c): code execution as the user, which a T1
   breach (K02a) gives.
-- **Mitigation, against (a) and (b).** The path comes from the tool's own configuration, is absolute, and is opened once
-  with symbolic links refused on the final component. The checks run on the **opened descriptor**, not the pathname: a
-  regular file, owned by the user, not group- or world-writable, with a link count of one. Each parent directory is
-  checked for ownership by the user or root and no group or world write. The content is read from that descriptor once,
-  held in memory, and its digest is logged; the file is not reopened per call, and a reload repeats the whole procedure.
-  The tool refuses a path inside a repository.
+- **Mitigation, against (a) and (b).** The path comes from the tool's own configuration and is absolute. Resolution is
+  **constrained and symlink-free at every component, atomically or descriptor by descriptor**: either one kernel call
+  that forbids symbolic links and magic links and keeps resolution beneath the starting directory (for example
+  `openat2` with the no-symlink and beneath constraints [I; verify against the kernel documentation for the platforms
+  supported]), or a walk that opens each component relative to the descriptor of the previous one, refusing symbolic
+  links, and checks each opened directory with `fstat` (owned by the user or root, no group or world write) before
+  descending. A platform with neither is unsupported for this tool. The final file is opened relative to the verified
+  parent descriptor, and the checks run on the opened descriptor (regular file, owned by the user, not group- or
+  world-writable, link count one). The content is read once from that descriptor, held in memory, and its digest is
+  logged; the file is not reopened per call, and a reload repeats the whole procedure. The tool refuses a path inside a
+  repository.
 - **Against (c): accepted, not mitigated.** A process with the maintainer's own authority can replace the file, and can
   also edit the tool's configuration and the log, so a logged digest shows a change only if the log was out of its reach.
   No outside-authority anchor is specified in the design. Therefore **same-user tampering is recorded as accepted
   residual risk**, and nothing above is claimed to prevent it. If the maintainer wants it closed, the option is a
   signature on the allowlist verified against a public key held by a different authority (a hardware key, or off the
   machine), in the manner of SAFO's signed approvals [I]. That is a design decision for #7.
-- **Verification.** Planned tests in a scratch directory: a symbolic link as the final component is refused; a file with
-  a link count above one is refused; a group-writable file and a group-writable parent are refused; a file inside a git
-  work tree is refused; a file replaced after the open does not change the allowlist held in memory; a changed file
-  changes the logged digest on reload. Command: `namei -m <allowlist path>` shows the modes of every component with no
-  group or world write.
+- **Verification.** Planned tests in a scratch directory: a symbolic link in **every** path position (each parent
+  directory and the final component) is refused; a parent replaced by a link, or swapped for another tree, during
+  resolution makes the load fail (using a test hook that pauses between steps); a file with a link count above one is
+  refused; a group-writable file and a group-writable parent are refused; a file in a git work tree is refused; a file
+  replaced after the open does not change the allowlist held in memory; a changed file changes the logged digest on
+  reload. `namei -m <allowlist path>` is a human diagnostic of the modes along the path; it shows nothing about which
+  objects a later open traverses and is not offered as proof.
 - **Residual.** Same-user tampering, accepted (above). Reopen if an anchor outside the user's authority is specified.
 
 ### K05. Abusive content met, stored or transcribed
@@ -506,39 +537,72 @@ the file the maintainer meant.
 - **Residual.** Virtualization enlarges the trusted computing base [W, Whonix threat-model page, quoted by the wiki].
   This one is the maintainer's decision, not a code fix.
 
-### K11. Hostile bytes parsed in the core
+### K11. Hostile bytes parsed in the core, and the sandbox-to-host result channel
 
-- **Abuse case.** A response is crafted to break the HTML, charset, compression or text-extraction code: deep nesting,
-  huge inputs, decompression bombs, encodings that disagree, malformed headers.
-- **Impact.** Medium: a parser bug in the host process would sit outside the sandbox.
-- **Prerequisites.** A page or a server response.
-- **Mitigation.** Parse and sanitize inside the sandbox (A2); the host validates only a bounded UTF-8 envelope; use a
-  memory-safe language and a maintained parser; limit nesting, total size, and decompression ratio; refuse unknown
-  encodings.
-- **Verification.** Test (planned): property and fuzz tests with a time and memory budget; a bomb fixture that must
-  stop at the cap.
-- **Residual.** A sandbox-contained parser bug still lets the attacker forge output (K01).
+- **Abuse case.** (a) A response is crafted to break the HTML, charset, compression or text-extraction code: deep
+  nesting, huge inputs, decompression bombs, encodings that disagree, malformed headers. (b) A **compromised sandbox**
+  sends the host a hostile result: an oversized or unterminated frame, a length that disagrees with the data, duplicate
+  or unknown or mistyped fields, trailing or repeated frames, invalid text encoding, or partial output after a crash.
+- **Impact.** Medium: a parser bug in the host process would sit outside the sandbox, and a malformed result is a route
+  to the AI (K01) or to host memory.
+- **Prerequisites.** (a) A page or a server response. (b) A compromised sandbox (K02).
+- **Mitigation.** Parse and sanitize inside the sandbox (A2); use a memory-safe language and a maintained parser; limit
+  nesting, total size and decompression ratio; refuse unknown encodings. For the **result channel**, the host owns the
+  contract and fails closed:
+  - **Framing.** One length-prefixed frame per fetch. The host reads the fixed-size length first, rejects any length
+    above the enforced maximum **before allocating or reading the body**, and reads exactly that many bytes with a
+    deadline. Any byte after the frame, a second frame, a short read, or a timeout rejects the result.
+  - **Schema.** A closed schema: the exact set of fields, each with a fixed type and bounds. Unknown, duplicate,
+    missing or wrongly typed fields fail; the text field must be valid UTF-8 and its length must match the declared
+    length. The provenance fields in the envelope are written by the host, not taken from the guest.
+  - **No page-derived output on error.** Any sanitizer failure, crash, timeout, truncation ambiguity or encoding error
+    returns a fixed, host-generated error that contains no byte derived from the page (not even a partial title), and
+    marks the sandbox poisoned (K12).
+- **Verification.** Planned tests from a **hostile guest stub**, each expected to be rejected with the fixed error and
+  no page-derived bytes: a length above the maximum (the test also checks the host did not allocate near that size); a
+  length that disagrees with the data; an unterminated frame; trailing bytes; two frames; a duplicate field; an unknown
+  field; a missing field; a mistyped field; invalid UTF-8; a crash or timeout after partial output. Planned property and
+  fuzz tests for the in-sandbox parser with a time and memory budget; a bomb fixture that must stop at the cap.
+- **Residual.** A sandbox-contained parser bug still lets the attacker forge a well-formed result (K01). The schema
+  makes the result checkable, not true.
 
 ### K12. Ephemerality fails: state survives a run or links runs
 
 - **Abuse case.** A cookie, cache entry, service worker, profile file, daemon state, changed configuration or a
-  surviving process outlives a run; a cleanup silently fails and the next fetch starts contaminated; circuits are
-  reused so two fetches are linked.
+  surviving process outlives a use of the sandbox; a cleanup silently fails and the next fetch starts contaminated; a
+  compromised guest lies to whatever inspects it; circuits are reused so two fetches are linked.
 - **Impact.** Medium: it ties visits together and lets an earlier breach persist.
-- **Prerequisites.** A prior hostile page, or a cleanup error.
-- **Mitigation.** A **clean-state attestation before every fetch**, with cleanup after the fetch as defense in depth.
-  The host side (never the guest) obtains: the snapshot or image identifier equals the recorded clean one; the guest or
-  container was freshly started for this run (new boot or container identifier); the process list equals the expected
-  list; the writable volumes are exactly the expected throwaway ones and are empty; the browser profile identifier is
-  new this run; and a new network-isolation token (circuit or stream isolation) is in force. Any mismatch refuses the
-  fetch. Known I2P linkability in the Whonix path (no stream isolation [V]) is outside the ephemerality guarantee and is
-  stated as such.
-- **Verification.** Planned test, on a stubbed backend, with state planted in each independent class and each expected to
-  make the attestation fail and the fetch be refused: a profile directory, a cache, a service-worker store, a daemon
-  state directory, a modified configuration file, a background process, a second writable volume, and a reused
-  isolation token. A separate test confirms a failed cleanup blocks the next fetch.
-- **Residual.** I2P linkability through Tor stays (Whonix wiki [V]). Attestation depends on the host-side inspection
-  being correct; K02 covers its inventory.
+- **Prerequisites.** A prior hostile page, or a cleanup error, or a compromised guest.
+- **Mitigation.**
+  - **Lifecycle.** The unit is **one fetch per sandbox instance** (a session of several fetches is a different, named
+    mode and is not modeled). Create or revert from the recorded clean image; the host verifies it; exactly one fetch
+    runs; teardown; the instance is destroyed or reverted. A failure at any transition, or any error from the result
+    channel (K11), leaves the instance **poisoned**: no fetch runs on it, and only a verified new instance clears the
+    state. "Run," "fetch" and "session" in this model mean this one unit.
+  - **Evidence the host controls.** Each attested property names its source, and a property that has no independent
+    source is not attested:
+    - Image or snapshot identity: the host's own record of what it created or reverted (host-controlled).
+    - Fresh start: the identifiers the host assigned when it created the instance (host-controlled).
+    - Writable storage: for a container or VM, the host inspects the instance's backing storage from outside the
+      guest, offline or from a fresh snapshot comparison, against the recorded clean state (host-controlled). Where the
+      tier does not support that, this property is **not independently observable** and is stated as a residual.
+    - Process list and profile identifier: **not independently observable for a VM** without a guest agent, and a
+      guest agent is a guest-derived claim. They are not attested for T3 from guest data; T3 relies on destroying and
+      recreating the guest from the clean image instead. For T2 the host reads the process table of the container from
+      outside (host-controlled).
+    - Network-isolation token: set and held by the host-side proxy or Gateway configuration (host-controlled).
+  - Cleanup after the fetch is defense in depth. Known I2P linkability in the Whonix path (no stream isolation [V]) is
+    outside the guarantee.
+- **Verification.** Planned tests against the **real backend** for T2 and T3 (stubs alone are insufficient here):
+  state planted outside any inventory the guest reports (on a second writable volume, in a daemon directory, in the
+  guest's disk, in a background process) must make the host-side check fail and the next fetch refused; a failure
+  injected at every lifecycle transition (create, verify, fetch, teardown, revert) must leave the instance poisoned and
+  every following fetch blocked until a verified new instance exists. On a stubbed backend, the same transitions test
+  the wrapper's state machine.
+- **Residual.** I2P linkability through Tor stays [V]. Properties marked not independently observable (guest process
+  list and profile identifier in a VM, and writable-storage inspection on any tier that cannot offer it) rest on
+  destroy-and-recreate and are not attested; a flaw in the hypervisor or the host-side inspection (K02) defeats the
+  rest.
 
 ### K13. The tool is distinguishable, or can be cloaked against
 
