@@ -108,7 +108,7 @@ maintainer-only, done outside Claude (section 6, 8).
     "url": {"type": "string", "maxLength": 2048},
     "destination_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"},
     "path": {"type": "string", "maxLength": 1024, "pattern": "^/"},
-    "session_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{8,64}$"},
+    "session_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{43}$"},
     "max_chars": {"type": "integer", "minimum": 256, "maximum": 131072},
     "timeout_s": {"type": "integer", "minimum": 5, "maximum": 180},
     "discovery": {"const": false}
@@ -119,8 +119,10 @@ maintainer-only, done outside Claude (section 6, 8).
 - `url` or (`destination_id` + `path`): exactly one form. The id form lets Claude refer to a destination
   without the address entering the conversation (4.5). Query strings are allowed only if the entry says so
   (6.2).
-- `session_id` is optional; omitted means a one-request session that is wiped on return. A supplied id
-  groups requests under one Tor circuit isolation and one ephemeral state (section 8).
+- `session_id` is optional. **It is never chosen by the caller.** Omitted means a one-request session wiped on
+  return. To keep a session across requests, the first response returns a controller-generated `session_id`
+  (256 random bits from the OS source, base64url, 43 characters) and later requests present it. A supplied id
+  the controller did not issue returns `session_unknown`; it never creates a session (section 8.2).
 - `max_chars` and `timeout_s` can only lower the configured caps, never raise them. A request above a cap is
   clamped, and the clamp is reported in `provenance.caps`.
 - `discovery` is reserved for Phase 2 (section 12). Only `false` is accepted; anything else returns
@@ -213,7 +215,8 @@ Shared definitions (all closed):
 
 Note `content_type` is an enum of the accepted media types only; the page's own header string is never copied.
 
-**`kr_fetch` response** (`knight-rider/response/fetch/1`):
+**`kr_fetch` response** (`knight-rider/response/fetch/1`) is a closed top-level `oneOf` of a success variant
+and an error variant (the error variant is defined after this block). The success variant:
 
 ```json
 {
@@ -243,6 +246,44 @@ Note `content_type` is an enum of the accepted media types only; the page's own 
   }
 }
 ```
+
+**Error variant of the `kr_fetch` response** (`fetch_error`). An error can occur before any destination, body,
+digest or sanitizer exists (malformed URL, allowlist unavailable, unknown session, tier unavailable, busy,
+`not_implemented`), during transport (`timeout`, `too_large`, `network_unreachable`) or after a fetch
+(`sanitizer_failed`, `unsupported_content_type`). So the error variant carries only what the controller really
+knows, and never invents provenance:
+
+```json
+{
+  "type": "object", "additionalProperties": false,
+  "required": ["schema", "untrusted", "marker", "ok", "request_id", "session_id", "provenance", "content", "error"],
+  "properties": {
+    "schema": {"const": "knight-rider/1"}, "untrusted": {"const": true}, "marker": {"$ref": "#/$defs/marker"},
+    "ok": {"const": false},
+    "request_id": {"$ref": "#/$defs/token"},
+    "session_id": {"oneOf": [{"$ref": "#/$defs/token"}, {"type": "null"}]},
+    "provenance": {"type": "object", "additionalProperties": false,
+      "required": ["fetched_at", "stage"],
+      "properties": {
+        "fetched_at": {"type": "string", "format": "date-time"},
+        "stage": {"enum": ["pre_fetch", "transport", "post_fetch"]},
+        "tier": {"enum": ["container", "whonix", "tor-browser"]},
+        "network": {"enum": ["tor", "i2p"]},
+        "destination_id": {"$ref": "#/$defs/id"},
+        "status_code": {"type": "integer", "minimum": 100, "maximum": 599},
+        "caps": {"$ref": "#/$defs/caps"}}},
+    "content": {"type": "null"},
+    "error": {"$ref": "#/$defs/error"}
+  }
+}
+```
+
+Only `fetched_at`, `stage` and the fields the controller already holds at that stage are present; a field that
+does not exist yet is **omitted**, not zero-filled. There is no digest, no sanitizer block, no counters and no
+backend-derived string in an error. The success variant requires `ok: true` and `error: null`. **Table-driven
+test:** for every error code, build the response at its true stage (a pre-fetch error with no destination, a
+transport error with a destination and no body, a post-fetch error with a destination and a status) and assert
+it validates against `fetch_error` and against nothing else, with no fabricated value.
 
 **`kr_destinations` response** (`.../response/destinations/1`): same four envelope fields (`schema`,
 `untrusted`, `marker`, `ok`), `request_id`, `provenance: {tier, fetched_at}`, `data` as a closed object
@@ -388,10 +429,10 @@ destinations:
   - id: example-onion        # lowercase id used in requests and logs
     network: tor             # tor | i2p, must match the host suffix
     host: placeholder.onion  # exact host, lowercase, no wildcard, no port
-    schemes: [http]          # subset of [http, https]; https is rejected for network: i2p in Phase 1
+    schemes: [http]          # Phase 1: only http. An entry naming https is rejected by the loader.
     port: 80                 # optional, default 80/443 by scheme
-    path_prefixes: ["/"]     # optional, http entries only; see the https rule below
-    allow_query: false       # optional, http entries only; default false: queries are refused
+    path_prefixes: ["/"]     # optional; request path must match one
+    allow_query: false       # optional; default false: queries are refused
     tags: [example]
     label: example-tor
     note: placeholder entry for a Tor onion service
@@ -442,8 +483,7 @@ transmitted request line (section 15).
    e. Collapse nothing else: repeated slashes (`//`) are kept as written and compared as written.
    f. The canonical path is **re-encoded once** to a fixed form (uppercase hex, unreserved characters left
       literal). That string is the one stored and transmitted.
-   g. **Match is exact equality or a slash-delimited prefix** (`http` entries only; an `https` entry is
-      host-scoped and carries no `path_prefixes`, see 9.2). An entry's `path_prefixes` item `P` (must start
+   g. **Match is exact equality or a slash-delimited prefix** (Phase 1 has `http` entries only, see 9.2). An entry's `path_prefixes` item `P` (must start
       and end with `/`, or be an exact path) matches path `X` if `X == P`, or `P` ends with `/` and `X` starts
       with `P`. A sibling that only shares leading characters (for example `/docs-old` against `/docs/`) does not
       match.
@@ -572,8 +612,8 @@ cut cannot split a sequence the rules would have removed.
 Each anchor `href` is resolved against the page URL, then run through the allowlist rules 1 to 6 with the same
 code path. A target that passes becomes `{destination_id, path}`; every other target becomes `{offlist: true}`
 and the address is dropped from everything the model sees; `offlist_link_count` counts them. In Phase 1 the
-address is dropped entirely; the Phase 2 candidate envelope in section 12 is the only place a retained
-address may live. The label is passed through steps 9 and 10 and
+address is dropped entirely and no candidate variant is accepted; the Phase 2 `candidate_list` variant and
+candidate envelope in section 12 are the only places a retained address may live. The label is passed through steps 9 and 10 and
 cut at 120 characters. At most 100 links are returned. Off-list addresses are deliberately not shown: they
 are the natural payload of an injection ("visit this instead"), and Phase 2 discovery will record them under
 its own gate instead (section 12).
@@ -593,7 +633,7 @@ One JSON object per line (`jsonl`), appended by the controller to `KNIGHT_RIDER_
 `$XDG_STATE_HOME/knight-rider/requests.jsonl`, mode 0600, directory 0700, never inside the repo. Size-rotated
 (10 MiB, keep 5).
 
-Fields: `ts`, `request_id`, `session_id`, `verb`, `tier`, `network`, `destination_id` (or null when denied),
+Fields: `ts`, `request_id`, `session_hmac` (a keyed hash, never the id), `verb`, `tier`, `network`, `destination_id` (or null when denied),
 `host_hmac` (so a denied or unknown host can be correlated within this installation without storing it), `path_hmac`,
 `decision` (`allowed`, `denied`), `reason` (the error code), `status_code`, `content_type`, `raw_bytes`,
 `raw_hmac`, `returned_chars`, `truncated`, `redirect_count`, `duration_ms`, `sanitizer_version`,
@@ -628,8 +668,13 @@ exactly the private allowlist plus whatever a model asked for.
 A **session** is a set of requests that share state: one Tor circuit isolation key (container tier), one
 browser profile or one VM boot (other tiers).
 
-- Created implicitly by the first request that names an unknown `session_id` (or an anonymous one for a
-  request without an id). Ends on `kr_session_end`, on idle timeout (default 300 s), on a hard lifetime limit
+- **Created only by the controller.** A request without a `session_id` creates a session (a one-request session
+  unless the response's returned `session_id` is presented again); a request naming an id the controller did not
+  issue is refused with `session_unknown`, never joined and never created. Each session is **bound to its owner**,
+  the MCP connection (and process identity) that made the creating request; a request or a `kr_session_end` from
+  any other connection with that id is refused as `session_unknown`, so one caller cannot join, use or end
+  another's session, and ids are unguessable. Ids appear in the model's context only for the owner and are
+  never logged in the clear (8.1 keys them). Ends on `kr_session_end`, on idle timeout (default 300 s), on a hard lifetime limit
   (default 1800 s), on any `sanitizer_failed`, and on controller shutdown.
 - **Container tier:** each session gets a fresh worker process in the fetcher with a fresh tmpfs working
   directory (64 MiB, `noexec,nosuid`) and a SOCKS username derived from the session id so Tor puts it on its own
@@ -657,7 +702,7 @@ any request. The broker keeps the fetcher away from the proxies. But a broker th
 HTTP responses, headers and gzip is itself exposed to hostile bytes, so one broker process holding both the
 parsers and the proxy access would only move the problem. Hence two parts with different jobs:
 
-- **`broker-front`** (the protocol stack): TLS (only for `https` entries), HTTP/1.1 response parsing, header
+- **`broker-front`** (the protocol stack): HTTP/1.1 response parsing (no TLS in Phase 1), header
   handling, chunked and gzip decoding, and byte-limit enforcement. It handles hostile bytes. It has **no
   network path to Tor or i2pd** and no control socket.
 - **`broker-egress`** (the capability gate): the only component with a path to the proxies. It does not parse
@@ -669,7 +714,7 @@ parsers and the proxy access would only move the problem. Hence two parts with d
 | Compromised component | Allowlist (host, port, network) | Path and request | Other |
 |---|---|---|---|
 | fetcher | Holds | Holds | It can ask once for the one page it was authorized to fetch. |
-| `broker-front` | Holds (it has no path to a proxy; `broker-egress` accepts only a registered single-use capability and connects only to its host and port) Holds for `http` entries (`broker-egress` writes the fixed request head itself). `https` entries are **host-scoped by design** (see the rule below), so there is no path claim to lose | It can serve altered bytes to the fetcher, which is why the fetcher's output is still untrusted. |
+| `broker-front` | Holds (it has no path to a proxy; `broker-egress` accepts only a registered single-use capability and connects only to its host and port) Holds (`broker-egress` writes the fixed request head itself and closes the upstream direction; Phase 1 has no `https` entries, see 9.2) | It can serve altered bytes to the fetcher, which is why the fetcher's output is still untrusted. |
 | `broker-egress` | **Does not hold.** It holds the proxy connections. | Does not hold | This is a small trusted component: a fixed-size SOCKS exchange and a byte relay, no TLS, no HTTP, no decompression. |
 | a proxy (Tor or i2pd) | Does not hold for its own network | Does not hold | Treated as untrusted network software; it is pinned (9.8) and sits behind `broker-egress` only. |
 | the controller or host | Does not hold | Does not hold | Out of the container tier's boundary. |
@@ -755,14 +800,12 @@ upstream bytes from `broker-front`** during it:
   direction** (a half-close, and any further upstream byte from `broker-front` is dropped and counted as a
   violation), so a second proxy request cannot be appended. Only the response direction is relayed.
   `Connection: close` is set so the proxy does not wait for another request.
-- **I2P, `https` entries: not supported in Phase 1.** It would need `broker-egress` to construct and validate a
+- **`https` entries (either network): not supported in Phase 1** (see below). For I2P it would also need `broker-egress` to construct and validate a
   `CONNECT` exchange against the i2pd proxy and then relay opaque TLS. Whether the i2pd HTTP proxy supports
   `CONNECT` to eepsites is `unverified` (the configuration page I read does not say), and eepsite TLS is
   uncommon. Until it is verified, an I2P entry with `schemes` containing `https` is rejected by the loader.
 - **Tor, `http` entries:** after the SOCKS exchange `broker-egress` writes the request head and closes the
   upstream direction in the same way.
-- **Tor, `https` entries:** after the SOCKS exchange, opaque TLS is relayed in both directions (host-scoped by
-  design, see below); the destination was fixed by `broker-egress` in the SOCKS step.
 
 **Test (fake proxies that record the application-level authority):** register a capability for destination A,
 simulate a compromised `broker-front` that sends a proxy request or `CONNECT` naming destination B (before,
@@ -773,20 +816,22 @@ exactly as stored, fixed headers `Host`, `User-Agent: Knight-Rider`, `Accept: te
 `Accept-Language: en`, `Accept-Encoding: identity, gzip`, `Connection: close`; no cookies, `Referer`,
 `Authorization`, other method or body.
 
-**HTTPS entries are host-scoped only (decision, round 3).** For `https` entries the encrypted request is built
-by `broker-front`, and `broker-egress` relays ciphertext it cannot read, so no component that is not exposed to
-hostile bytes can see or enforce the path. Rather than claim a path scope that a compromised protocol stack
-could cross, the design chooses the simplest rule that makes the claim true: **an allowlist entry whose
-`schemes` includes `https` authorizes the whole host and port, and may not carry `path_prefixes` or
-`allow_query`** (the allowlist loader rejects such a file, fail closed, with `allowlist_unavailable`). Path
-scoping is enforced for `http` entries only, where `broker-egress` writes the request head itself. The
-alternative (a separately isolated TLS-terminating component that builds the request) was rejected: it is one
-more trusted component, and its compromise would still defeat the path claim. A maintainer who needs a
-path-scoped destination uses an `http` entry. The controller still canonicalizes and logs the path it
-authorized, so the log shows what Claude asked for; for `https` that is an audit record, not an enforced limit.
-**Test:** a file with `https` and `path_prefixes` (or `allow_query`) is rejected; and with `broker-front`
-simulated as compromised, an `http` entry's transmitted request never differs from the canonical path, while
-the `https` test documents that any path on the authorized host is reachable by design.
+**Plain HTTP only in Phase 1 (decision, round 6).** Both Tor onion services and I2P eepsites already encrypt
+and authenticate the connection end to end at the transport (the onion address is the service's key; I2P
+destinations are keys), so a second TLS layer adds little for the read-only fetch. It also has a cost the earlier
+drafts underestimated: once `broker-front` terminates TLS, the encrypted stream is opaque to `broker-egress`, so
+a compromised protocol stack controls the decrypted HTTP stream and could send other methods, bodies, headers
+and many requests, not only another path. That would defeat the read-only core, the request count and the path
+scope, not just one of them. The simplest design that keeps those claims true is not to have the exposure:
+**in Phase 1 every allowlist entry is plain `http`. An entry whose `schemes` names `https` is rejected by the
+loader (fail closed, `allowlist_unavailable`), for both networks.** Path scoping (`path_prefixes`,
+`allow_query`) is kept for `http` entries, where `broker-egress` writes the whole request head itself and
+closes the upstream direction. Deferred design item (open question 7): TLS termination in a small trusted gate
+that builds exactly one fixed `GET`, validates the certificate and never accepts request bytes from an exposed
+component, with its own review. **Test:** a file with `https` in any entry's `schemes` is rejected; with
+`broker-front` simulated as compromised, no byte it sends upstream ever reaches a proxy or a destination (the
+upstream direction is closed after the request head), and a second request or a non-GET method on a capability
+is impossible, not merely documented.
 
 **Reducing `broker-front`'s exposed surface.**
 
@@ -797,7 +842,7 @@ the `https` test documents that any path on the authorized host is reachable by 
   upgrade, no trailers, no pipelining, no connection reuse. Anything else closes the connection. (`inferred`: a
   hand-written reader in a memory-safe language is smaller than a general HTTP client; the builder picks the
   language and records the choice.)
-- TLS only for `https` entries, through the language's standard library, verifying certificates (9.6 step 5).
+- No TLS in Phase 1 (plain `http` entries only, 9.2); the deferred TLS design is open question 7.
 - A decompressor with hard output limits (streaming, stop at the limit).
 - It never follows a redirect, never parses HTML and never sees the allowlist.
 - It returns to the fetcher `{status, content_type (enum or none), location (raw, unauthorized), body_bytes}`
@@ -1048,9 +1093,8 @@ The test suite proves the flow matrix without any real Tor or I2P:
    including the `job_nonce` the controller supplied (11.1 uses the same nonce discipline). The controller
    reads that reply with the framing discipline of 9.2: a frame of at most 256 KiB, incremental bounded
    decoding, a read and a total deadline, close on the first excess byte.
-5. TLS for `https` onion entries: the broker's connection verifies against the system trust store by default.
-   Many onion sites use self-signed certificates or none; another model is an open question (7) and is not
-   implemented in Phase 1.
+5. No TLS in Phase 1: allowlist entries are plain `http`; the transport (onion or I2P) is already encrypted
+   and authenticated end to end. TLS is a deferred item (open question 7).
 
 ### 9.7 What the container tier does not do
 
@@ -1318,27 +1362,40 @@ The same rule as 9.8: nothing executable is trusted by name, and startup is refu
   digest-and-signature chain is stored in the repository's pin file and checked before import. How the Whonix
   project signs its KVM images and what to verify is `unverified` (not read); the builder reads the Whonix
   documentation first and records what was done.
-- **Clean snapshots bound to the state that will be restored, measured by the host.** A snapshot name, the
-  base image and the domain XML do not describe the disk state a revert restores, so they are not enough. When
-  the maintainer creates each clean snapshot (`kr-clean`, `kr-clean-gw`) the wrapper records, from the host:
-  1. the **complete qcow2 backing chain** of every disk of the domain (every file, in order) and the SHA-256 of
-     **each file's content** in that chain, including the overlay that holds the snapshot's changes;
-  2. the snapshot's **metadata** (its XML) and its mapping to those exact files, and the domain XML hash;
-  3. **no memory snapshot is used** (disk-only, so the guest boots from the measured disk state); a memory
-     snapshot is forbidden unless its complete state file is also measured, which Phase 1 does not do;
-  4. the guest service's digest, as a tripwire only.
-  Before each session, after each revert and again before the lock is released, the wrapper recomputes the
-  chain, the per-file digests and the metadata mapping and compares them with the record; a mismatch (a
-  replaced or modified overlay, a changed chain, a snapshot that maps to different files, a changed XML)
-  refuses to start and powers the domains off. The clean snapshot artifacts are made **immutable to the
-  runtime identity** where the host allows it (owned by a different user, read-only, or marked immutable), and
-  the measurement is on content, not on name or timestamp. Digesting multi-gigabyte images takes time; the
-  wrapper may cache a digest against the file's inode and change time only if the files are immutable to the
-  runtime identity, and re-digests otherwise (`inferred`: cost is acceptable for a one-session-at-a-time tier).
-  **Test (libvirt and files stubbed):** record the measurements, then substitute or mutate the overlay or a
-  backing file while preserving the snapshot name, the base image and the domain XML, and assert startup
-  refuses and the sentinel content never reaches a session; also a changed backing-chain order, an added
-  memory snapshot and a metadata that points at other files.
+- **Immutable golden state and disposable overlays (external-snapshot lifecycle).** The clean state is a
+  **golden chain** of qcow2 files that nothing writes to at run time, and every session runs on a **fresh,
+  writable, disposable overlay** whose backing file is the top of the golden chain. This replaces the idea of
+  reverting an internal snapshot in place (internal snapshots live in the same file the guest writes, so a
+  guest write could alter the clean state). `revert` therefore means: power off the domain, **destroy the
+  overlay**, create a new empty overlay on the golden chain, start the domain from it. `snapshot-revert` (7.2 of
+  the libvirt text quoted above) is not used for the clean state; whether the libvirt version in use offers a
+  better primitive is `unverified` and the lifecycle above does not depend on it.
+  - The golden chain (every file, in order) is owned by an identity other than the one QEMU, libvirt and the
+    wrapper run as, read-only to them (or marked immutable), and **not writable at run time**. Only the
+    maintainer's offline "update golden image" procedure writes it, and that procedure re-records the
+    measurements.
+  - **Measurements are of the golden chain only:** the backing chain's file list and order, the SHA-256 of each
+    file's content, the domain XML hash and, as a tripwire, the guest service's digest. **No memory snapshot**
+    (a disk-only boot from the golden state); a memory state would have to be measured completely, which Phase 1
+    does not do. The disposable overlay is never measured, never trusted and **never cached or skipped**: it is
+    created fresh and destroyed, and anything the VM, QEMU, libvirt or the wrapper can write is never covered by a
+    cached digest.
+  - Before each overlay is created, and again after it is destroyed and before the lock is released, the
+    wrapper revalidates the golden chain (list, order, content digests) against the record; a mismatch, a
+    chain that grew, or a golden file that changed refuses to start and powers the domains off. Digesting large
+    images takes time; a digest may be cached against a golden file's device, inode, size and change time only
+    while the file is immutable to every runtime identity, and is recomputed whenever any of these differ
+    (`inferred`: acceptable cost for a one-session-at-a-time tier).
+  - The same applies to the Gateway (its own golden chain and disposable overlay). A fresh Gateway overlay each
+    session also discards Tor's cached state, so the first fetch is slower (`inferred`).
+  **Acceptance test (libvirt and files stubbed, then once on a real disposable host with the maintainer's go):**
+  record the golden measurements; start a session; boot and modify the guest (write a sentinel file and change
+  an executable in the guest's filesystem); end the session; assert the golden chain is **byte-identical** to
+  the record; assert the overlay is destroyed (the file no longer exists and nothing references it); start the
+  next session and assert it starts from the sentinel-free golden state (the sentinel is absent, the executable
+  is the original). Also: substitute or mutate a golden file while preserving names, base image and XML (startup
+  refuses); a changed chain order; an added memory snapshot; an overlay that survives teardown (the session
+  does not start); and a stale overlay left by a crash (destroyed on the next start before anything is served).
 - **Guest service:** `kr-guest-fetch` is installed from a build whose digest is recorded; the wrapper reads
   the running service's digest through the vsock hello before the first permit and refuses on mismatch. A
   compromised guest could lie about this, which is why the check is a tripwire and not a boundary; the revert
@@ -1372,11 +1429,26 @@ to change when it arrives. The maintainer's approved record is exactly **livenes
 - **Discovery records are never fetchable or expandable.** No verb accepts a discovery record or its address
   as a fetch target, and no link found while recording a candidate creates another candidate. The only way a
   destination becomes fetchable is the maintainer promoting it into the allowlist file by hand.
+- **Where the candidate address comes from (reserved backend variant).** The controller never parses hostile
+  HTML itself (section 5), so it cannot extract links on its own. The address reaches it through a third closed
+  backend variant, reserved for Phase 2 and **rejected as `internal` in Phase 1**: `candidate_list`
+  `{variant: "candidates", job_nonce, response_digest (the raw digest of the response the links came from),
+  candidates: [{link_index (integer), target (one bounded string, at most 2,048 bytes)}] with at most 20
+  entries}`. Its `target` strings are treated exactly like redirect targets (4.4): consumed only by the
+  controller's strict URL parser; never copied into a model-facing response, a log line, an error message or a
+  diagnostic; held in controller memory for the run and erased; usable only to mint the single-use liveness
+  capability; **never accepted for an ordinary fetch capability**, and **never accepted from a response produced
+  by a discovery check** (the controller does not request candidates from those). A candidate must match a link
+  in the same response's sanitizer link list by `link_index` and be off-list, else it is dropped. This is a
+  second, named exception to "no backend string outside sanitized content" (the first is the redirect target);
+  the schema walk test asserts exactly these two.
+  **End-to-end test (when built):** fixture page with one off-list link; assert exactly one internal candidate
+  envelope is created and one liveness capability is minted, and that the address appears in no public
+  response, log, error or diagnostic (canary search).
 - **Where the candidate lives (reserved internal envelope, never model-facing).** Phase 2 needs the address
   to check liveness, so the contract reserves a closed, **internal-only** `candidate` envelope held in
   **controller memory for the run only**: `{request_id (the authorized fetch it came from), response_nonce (that
-  response's job nonce), canonical_target (the candidate as extracted by the controller's strict URL parser from
-  a link in that response), extraction_proof (the index of the link in that response's sanitizer link list and the
+  response's job nonce), canonical_target (the candidate as parsed by the controller's strict URL parser from the `candidate_list` target for a link in that response), extraction_proof (the index of the link in that response's sanitizer link list and the
   response's raw digest), capability (single-use, non-fetchable: it permits one liveness check and nothing
   else, and is not a fetch capability of 9.2)}`. It: never enters a model-facing response or a log; cannot be
   supplied or influenced by the model (no verb takes it); expires when its response's session or run ends and is
@@ -1469,8 +1541,8 @@ Tests are hermetic: no real Tor or I2P, no real proxy. A fake SOCKS5 and HTTP pr
 - **Topology and flows:** the static compose test and the hermetic port-enumeration and reachability tests of
   9.5; the broker tests of 9.5 (single use, expiry, no host or path from the fetcher, redirects not followed,
   gate limits, fail closed).
-- **Runtime sandbox attestation, log-key and https-scope tests:** the attestation of 9.5, the keyed-hash tests
-  of 8.1 and the https host-scope tests of 9.2.
+- **Runtime sandbox attestation, log-key and https-rejection tests:** the attestation of 9.5, the keyed-hash tests
+  of 8.1 and the https-rejection and compromised-front tests of 9.2.
 - **Pinning:** the refusals of 9.8 and 11.6.
 - **Discovery contract:** the test of section 12 (a candidate sourced from another candidate creates nothing;
   an extra field is rejected).
@@ -1500,8 +1572,10 @@ Tests are hermetic: no real Tor or I2P, no real proxy. A fake SOCKS5 and HTTP pr
    that tier?
 6. **i2pd bandwidth and `notransit`.** Is a client-only router with transit disabled still a good I2P citizen
    for the load this tool generates, and does the I2P project object to it? Not read.
-7. **TLS on `https` onion entries.** Many use self-signed certificates. Add a pinned-fingerprint option per
-   entry in Phase 1 or later?
+7. **Deferred: TLS termination.** `https` entries are rejected in Phase 1 (9.2). Later: a small trusted gate
+   that terminates TLS, builds exactly one fixed `GET`, validates the certificate (many onion sites use
+   self-signed certificates, so a pinned-fingerprint option may be needed) and never accepts request bytes from
+   an exposed component. It needs its own design and review.
 8. **Should Claude ever see a host?** The id form hides addresses. If `kr_destinations` must show hosts to
    help the maintainer pick one, that changes what lands in transcripts.
 9. **Whonix guest packaging.** Does the Whonix Workstation image ship Python 3 and a compatible HTML parser, or
