@@ -371,7 +371,12 @@ reach it; a non-root sandbox user; ephemeral sessions (K12); engines kept curren
   processes. Each may name a destination that is not on the list. Checking redirects does not cover them.
 - **Impact.** High: it removes default deny, which every other control assumes.
 - **Prerequisites.** (a) and (b): a page and a parser difference. (c): a plausible message. (d): an allowlisted page.
-- **Mitigation.** Parse once into a canonical host, port and scheme; match exactly against canonical entries; reject
+- **Mitigation.** Parse once into a canonical host, port and scheme, held as an **immutable canonical destination
+  object**; the broker authorizes that object, and **dispatch consumes only that object, never the original input
+  string**. Nothing downstream parses the string again, so no second parser can read it differently. The redirect check,
+  the probe capability (second capability below) and the proxy request are all built from the same object, and
+  encodings and normalization (case, percent-encoding, trailing dots, Unicode forms, default ports, user information)
+  are resolved once, before authorization. Match exactly against canonical entries; reject
   anything the parser cannot canonicalize. Allow only the schemes the networks need. Redirects are not followed
   automatically; each hop is re-checked against the allowlist and counted against a small cap; a redirect to a
   non-allowlisted or non-network destination is refused. The tool has no verb that edits the allowlist, and promotion of a
@@ -391,7 +396,13 @@ reach it; a non-root sandbox user; ephemeral sessions (K12); engines kept curren
   text only. Where a tier cannot enforce this (T1 drives a full browser, so brokering depends on browser configuration
   that a compromised browser can bypass), the model does not claim it: T1 is recorded as unable to guarantee the
   invariant against a compromised browser, and for T2 and T3 the enforcement point is the proxy the sandbox must use.
-- **Verification.** Planned test: a table of hostile destination forms, each denied, and of valid forms, each passed; a
+- **Verification.** Planned **authorization-to-dispatch test**, end to end: for each destination form in the table
+  (including ambiguous encodings and normalization differences between components), compare three tuples for equality:
+  the `(scheme, host, port)` the broker authorized, the tuple in the redirect or probe capability, and the tuple the
+  **proxy observes leaving**, recorded at the egress point and not in the guest. Any mismatch fails; so does any second
+  parse of the original string (a test hook makes the dispatch path fail if it receives anything other than the
+  canonical object) and any request observed at the proxy for which no authorization record exists. Planned test: a
+  table of hostile destination forms, each denied, and of valid forms, each passed; a
   redirect-to-forbidden test and a redirect-loop test; a test that no tool verb writes the allowlist path. Planned
   **request-class fixture**: an allowlisted document that tries each request class (image, stylesheet, frame, script,
   font, refresh, prefetch, helper-process request) toward a forbidden destination; assert zero broker dispatches and
@@ -567,11 +578,25 @@ the file the maintainer meant.
     build provenance is checked where the vendor publishes it [I]; and the pin's recorded date is not older than a
     maximum age, after which the check fails until the pin is reviewed. Procedures are written down with the date and
     verified against each vendor's page at the time [I].
+  - **Binding the pins to what runs.** Pins that exist on paper prove nothing about the bytes executed. At **every
+    start**, before any sandbox is created, the controller resolves each **effective** artifact from the runtime
+    configuration (not from the repository): the container image actually selected, the browser executable actually
+    launched, the daemon binaries, the VM disk and snapshot actually attached, and the dependencies actually loaded. For
+    each it computes or reads the content digest and identity (running image digest, executable hash, snapshot or disk
+    identity) and compares them with the approved pin manifest. It **refuses to start** on a missing, mutable (tag-only
+    or floating), unverifiable or mismatched artifact. The comparison is repeated against the running instance
+    (the image digest the runtime reports for the running container, the hash of the launched executable) after
+    creation and before the first fetch, so a configuration that selects one artifact and a runtime that runs another
+    also fails closed.
   - Vulnerability scanning (the GYST `security` workflow, Dependabot) stays, as a separate signal. It is not evidence of
     provenance.
 - **Verification.** Planned: `./scripts/check-pins.sh` exits 0 on the real tree. Test: a fixture with one digest-pinned
   and one tag-only reference must exit non-zero. Test: an expired pin fails; a digest mismatch fails; a signature that
-  does not match the recorded fingerprint fails (using stubs, no network).
+  does not match the recorded fingerprint fails (using stubs, no network). **Run-time binding test:** pin artifact A
+  and configure artifact B (a different image digest, an older local VM disk, a different executable); startup must
+  fail **before sandbox creation**, with no instance created. A second case selects A in configuration but makes the
+  runtime run B; the post-creation comparison must refuse the first fetch. Each artifact class (image, browser
+  executable, daemon binary, VM disk or snapshot, dependency) has its own case.
 - **Residual.** A compromised signing key or a zero-day. Reopen at every engine upgrade.
 
 ### K10. The Whonix host question
@@ -808,7 +833,10 @@ consumer's transcript (F5).
 ## Keeping it honest
 
 - Security claims are repeated in the narrative and in the Threat Dragon file (flow and threat text). A planned check
-  holds a short list of claim phrases (for example the lifecycle in K12, the broker capabilities in K04, the closed
+  compares **structured claims**, not phrases: a claims manifest (the verb registry by caller, the per-variant result
+  schema, the lifecycle steps, the broker capabilities, the persisted discovery representation, the pin-binding
+  invariant) from which the narrative tables and the file's flow and threat text are checked, field by field. (For
+  example the lifecycle in K12, the broker capabilities in K04, the closed
   result schema in K11, the verb registry, and the persisted discovery representation in K08) and fails if the narrative and the file disagree on them. The GYST checker validates the
   file's shape and topics, not that the two documents say the same thing.
 
