@@ -431,12 +431,19 @@ the file the maintainer meant.
   that forbids symbolic links and magic links and keeps resolution beneath the starting directory (for example
   `openat2` with the no-symlink and beneath constraints [I; verify against the kernel documentation for the platforms
   supported]), or a walk that opens each component relative to the descriptor of the previous one, refusing symbolic
-  links, and checks each opened directory with `fstat` (owned by the user or root, no group or world write) before
+  links, and checks each opened directory with `fstat` (owned by the user or root, writable by no other identity, see Effective writers below) before
   descending. A platform with neither is unsupported for this tool. The final file is opened relative to the verified
-  parent descriptor, and the checks run on the opened descriptor (regular file, owned by the user, not group- or
-  world-writable, link count one). The content is read once from that descriptor, held in memory, and its digest is
+  parent descriptor, and the checks run on the opened descriptor (regular file, owned by the user, writable by no identity other than the configured user and root, link count one). The content is read once from that descriptor, held in memory, and its digest is
   logged; the file is not reopened per call, and a reload repeats the whole procedure. The tool refuses a path inside a
   repository.
+- **Effective writers, not mode bits.** "No other writer" means **effective access**: for every path component and the
+  final file, the set of identities that can write is exactly the closed set {the configured user, root}. Mode bits and
+  ownership are necessary but not sufficient, because a nontrivial access-control list, or an equivalent platform
+  mechanism, can grant another identity write access while the mode and owner look safe. The loader therefore rejects
+  any nontrivial access-control list (anything beyond the base owner, group and other entries) and any permission
+  mechanism it cannot evaluate, on every path component and on the final file, or else computes the effective writers
+  and requires that closed set. A mechanism the tool does not understand **fails closed**, on every supported platform;
+  a platform where effective writers cannot be determined is unsupported for this tool.
 - **Against (c): accepted, not mitigated.** A process with the maintainer's own authority can replace the file, and can
   also edit the tool's configuration and the log, so a logged digest shows a change only if the log was out of its reach.
   No outside-authority anchor is specified in the design. Therefore **same-user tampering is recorded as accepted
@@ -446,7 +453,10 @@ the file the maintainer meant.
 - **Verification.** Planned tests in a scratch directory: a symbolic link in **every** path position (each parent
   directory and the final component) is refused; a parent replaced by a link, or swapped for another tree, during
   resolution makes the load fail (using a test hook that pauses between steps); a file with a link count above one is
-  refused; a group-writable file and a group-writable parent are refused; a file in a git work tree is refused; a file
+  refused; a group-writable file and a group-writable parent are refused; a **fixture whose modes and owner look safe but whose
+  access-control list grants another identity write access, on the final file and separately on a parent directory,**
+  must fail to load, as must a fixture using any permission mechanism the loader cannot evaluate (on each supported
+  platform); a file in a git work tree is refused; a file
   replaced after the open does not change the allowlist held in memory; a changed file changes the logged digest on
   reload. `namei -m <allowlist path>` is a human diagnostic of the modes along the path; it shows nothing about which
   objects a later open traverses and is not offered as proof.
@@ -733,7 +743,12 @@ the file the maintainer meant.
 - **Verification.** Planned **sibling-candidate test**: an allowlisted page yields candidates B and D; the probe of B plants
   state (a profile change, cache entry, background process, writable file) or poisons the result channel; the probe of D
   must run in a distinct, verified-clean instance, or be refused until one exists, and must observe none of B's state.
-  Planned tests against the **real backend** for T2 and T3 (stubs alone are insufficient here):
+  Planned tests against the **real backend** for T1, T2 and T3 (stubs alone are insufficient here). For **T1**: during
+  one transaction plant a profile change, a cache entry, a background or helper process and a writable file; the next
+  transaction must run under a new, host-observed profile identity and see none of them; a failure injected at every T1
+  lifecycle transition (create the profile, verify, fetch, teardown, delete) leaves the profile poisoned until a
+  verified replacement exists. If a T1 deployment cannot provide this, its ephemerality guarantee is weakened and
+  recorded here as residual risk. For T2 and T3:
   state planted outside any inventory the guest reports (on a second writable volume, in a daemon directory, in the
   guest's disk, in a background process) must make the host-side check fail and the next fetch refused; a failure
   injected at every lifecycle transition (create, verify, fetch, teardown, revert) must leave the instance poisoned and
@@ -775,10 +790,18 @@ the file the maintainer meant.
 - **Abuse case.** An endless stream, a slow trickle, a redirect loop, a huge body, a compressed bomb, or many requests.
 - **Impact.** Low: availability and disk.
 - **Prerequisites.** A page or server.
-- **Mitigation.** A byte cap enforced while streaming, a wall-clock cap per request and per run, a redirect cap, a
+- **Mitigation.** A byte cap enforced **at the response-ingress point**, before buffering, decompression, parsing or
+  browser caching, so the client closes or cancels the transfer after at most the cap plus bounded framing overhead; two
+  distinct limits: a **wire limit** on bytes received (applied before any decompression) and a **decoded limit** on
+  bytes after decompression (applied while decompressing, with a ratio limit), and either one ends the transfer;
+  declared bounds on peak memory and temporary storage; a wall-clock cap per request and per run, a redirect cap, a
   concurrency limit, content-type allowlist (text types only), size-limited tmpfs, and a kill-and-revert on breach.
 - **Verification.** Test (planned) against a stub server that streams forever, trickles, loops and bombs; each must stop
-  at the cap with a distinct error.
+  with a distinct error. **Ingress observation:** the stub sends well beyond the limit and the test counts bytes at the
+  ingress enforcement point (the proxy or transport, not the sanitizer's output): the client must close or cancel after
+  at most cap plus the declared framing overhead, and peak memory and temporary storage must stay within the declared
+  bounds. The wire limit (uncompressed) and the decoded limit (a compressed body that expands past it) are tested
+  separately, each ending the transfer on its own.
 - **Residual.** Low.
 
 ### K16. Intelligence integrity: lures, cloaked or poisoned pages
