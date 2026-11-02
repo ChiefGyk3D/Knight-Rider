@@ -433,17 +433,21 @@ the file the maintainer meant.
   supported]), or a walk that opens each component relative to the descriptor of the previous one, refusing symbolic
   links, and checks each opened directory with `fstat` (owned by the user or root, writable by no other identity, see Effective writers below) before
   descending. A platform with neither is unsupported for this tool. The final file is opened relative to the verified
-  parent descriptor, and the checks run on the opened descriptor (regular file, owned by the user, writable by no identity other than the configured user and root, link count one). The content is read once from that descriptor, held in memory, and its digest is
+  parent descriptor, and the checks run on the opened descriptor (regular file, owned by the user, with no effective writer outside the allowed principals, link count one). The content is read once from that descriptor, held in memory, and its digest is
   logged; the file is not reopened per call, and a reload repeats the whole procedure. The tool refuses a path inside a
   repository.
-- **Effective writers, not mode bits.** "No other writer" means **effective access**: for every path component and the
-  final file, the set of identities that can write is exactly the closed set {the configured user, root}. Mode bits and
-  ownership are necessary but not sufficient, because a nontrivial access-control list, or an equivalent platform
-  mechanism, can grant another identity write access while the mode and owner look safe. The loader therefore rejects
-  any nontrivial access-control list (anything beyond the base owner, group and other entries) and any permission
-  mechanism it cannot evaluate, on every path component and on the final file, or else computes the effective writers
-  and requires that closed set. A mechanism the tool does not understand **fails closed**, on every supported platform;
-  a platform where effective writers cannot be determined is unsupported for this tool.
+- **Effective writers, not mode bits.** The invariant is a **subset rule**: for every path component and for the final
+  file, **no effective writer exists outside the allowed principals**. The allowed principals are the configured user
+  and the platform's privileged identity (root on the platforms this tool names; the tool's configuration states the
+  allowed set per supported platform). The configured user does **not** need to be able to write every ancestor:
+  root-owned, non-writable system directories are expected and pass. The privileged identity is allowed by definition,
+  because it bypasses permission checks on every platform and is not an enumerable access-control entry. The
+  **checkable condition**, per component and for the file: (1) the owner is an allowed principal; (2) no group or other
+  write bit is set; (3) the access-control list has only the base entries, or any extra entry grants no write to a
+  principal outside the allowed set; (4) no other write-granting mechanism the tool knows applies. If the loader
+  **cannot evaluate** a component (an unknown permission mechanism, an unsupported file system, a platform whose allowed
+  set is not configured), it **refuses to load with a distinct error** and does **not** fall back to mode bits alone:
+  that fallback would silently reopen the access-control gap. Mode bits and ownership are necessary but not sufficient.
 - **Against (c): accepted, not mitigated.** A process with the maintainer's own authority can replace the file, and can
   also edit the tool's configuration and the log, so a logged digest shows a change only if the log was out of its reach.
   No outside-authority anchor is specified in the design. Therefore **same-user tampering is recorded as accepted
@@ -456,7 +460,12 @@ the file the maintainer meant.
   refused; a group-writable file and a group-writable parent are refused; a **fixture whose modes and owner look safe but whose
   access-control list grants another identity write access, on the final file and separately on a parent directory,**
   must fail to load, as must a fixture using any permission mechanism the loader cannot evaluate (on each supported
-  platform); a file in a git work tree is refused; a file
+  platform), with a distinct error and no fallback to mode bits. **Positive fixtures, which must load successfully:**
+  an ordinary user-owned regular file with a restrictive mode in a user-owned restrictive directory, reached through
+  root-owned, non-writable system directories; the same with an access-control list that has only the base entries; and
+  the same with an extra ACL entry that grants no write to anyone outside the allowed set. The suite also runs against a
+  stub loader that rejects every input and must fail, so an implementation that refuses all allowlists cannot pass;
+  a file in a git work tree is refused; a file
   replaced after the open does not change the allowlist held in memory; a changed file changes the logged digest on
   reload. `namei -m <allowlist path>` is a human diagnostic of the modes along the path; it shows nothing about which
   objects a later open traverses and is not offered as proof.
@@ -580,19 +589,36 @@ the file the maintainer meant.
 ### K09. Supply chain: browser, daemons, images, dependencies
 
 - **Abuse case.** A tampered or outdated Tor Browser, Tor, i2pd, Whonix image, container base image or build dependency
-  is installed; a mutable tag is repointed; or an old one is left in place and a published flaw is used against it.
+  is installed; a mutable tag is repointed; an old one is left in place and a published flaw is used against it; or a
+  **repository contributor, or a compromised repository path**, changes an artifact reference, its expected digest and
+  the recorded signer together, with a replacement signed by the contributor's own key.
 - **Impact.** High: it runs inside the sandbox and, through K02, beyond it.
-- **Prerequisites.** A compromised upstream or download path, or neglect.
+- **Prerequisites.** A compromised upstream or download path, or neglect; for the repository variant, write access to
+  the repository (a merged change, or a compromised account or path). The repository variant ranks with K09 at High
+  because one change defeats every check that consults only repository contents.
 - **Mitigation.** Two separate controls, because they prove different things.
   - **Pinning policy, parse-and-fail.** A script parses every artifact reference in the repository (image
     definitions, image and VM references, browser download manifests, dependency locks) and fails unless **each one**
     meets the policy: referenced by digest, or by version plus an expected digest recorded in a pin file. A tag-only,
     floating or unparseable reference fails. Finding a digest elsewhere in the same file does not count.
   - **Provenance verification, separate.** For each pinned artifact: the signature verifies against the vendor's
-    published key whose fingerprint is recorded in the pin file; the downloaded content matches the recorded digest;
+    published key whose fingerprint is recorded in the **trust anchor** (below, not the pin file); the downloaded content
+    matches the recorded digest;
     build provenance is checked where the vendor publishes it [I]; and the pin's recorded date is not older than a
     maximum age, after which the check fails until the pin is reviewed. Procedures are written down with the date and
     verified against each vendor's page at the time [I].
+  - **Trust anchor, separate from the pins.** The trust anchor holds the approved signer identities (vendor key
+    fingerprints) and the rules for what may be pinned. It is a **different file from the pin manifest** (which holds
+    versions and expected digests), with a different change authority: a change to the anchor needs review and approval
+    by a designated maintainer other than the author, enforced by a repository rule on that path, and its digest is
+    **recorded out of band**, outside the repository, in the maintainer's own private record. At every start and in
+    CI the controller refuses to run if the anchor's digest differs from the out-of-band record, and every pinned
+    artifact's signer must be an identity in the anchor. A change to the pins alone, or to the pins together with the
+    pin manifest, cannot introduce a new signer: the check fails unless the anchor was changed through its own approved
+    path and the out-of-band record updated. The same-authority limit is stated plainly: **if one person or account
+    controls repository write access, the anchor file and the out-of-band record, the separation is procedural only and
+    that person can change all three**; that is accepted residual risk for a single-maintainer repository, and it is why
+    the out-of-band record must live where repository write access does not reach.
   - **Binding the pins to what runs.** Pins that exist on paper prove nothing about the bytes executed. At **every
     start**, before any sandbox is created, the controller resolves each **effective** artifact from the runtime
     configuration (not from the repository): the container image actually selected, the browser executable actually
@@ -607,12 +633,17 @@ the file the maintainer meant.
     provenance.
 - **Verification.** Planned: `./scripts/check-pins.sh` exits 0 on the real tree. Test: a fixture with one digest-pinned
   and one tag-only reference must exit non-zero. Test: an expired pin fails; a digest mismatch fails; a signature that
-  does not match the recorded fingerprint fails (using stubs, no network). **Run-time binding test:** pin artifact A
+  does not match the recorded fingerprint fails (using stubs, no network). **Anchor tests:** (1) a change that replaces an artifact, its expected digest and its recorded signer together,
+  correctly signed by the new key, with the anchor **unchanged**, must fail; (2) a change that also edits the anchor
+  but not the out-of-band record must fail at start and in CI; (3) the anchor and the out-of-band record changed
+  through the approved path pass; (4) a read-only query of the repository rules shows the review requirement on the
+  anchor path (expected: present). **Run-time binding test:** pin artifact A
   and configure artifact B (a different image digest, an older local VM disk, a different executable); startup must
   fail **before sandbox creation**, with no instance created. A second case selects A in configuration but makes the
   runtime run B; the post-creation comparison must refuse the first fetch. Each artifact class (image, browser
   executable, daemon binary, VM disk or snapshot, dependency) has its own case.
-- **Residual.** A compromised signing key or a zero-day. Reopen at every engine upgrade.
+- **Residual.** A compromised signing key or a zero-day. A single party holding repository write access, the anchor
+  and the out-of-band record (see above). Reopen at every engine upgrade and at any change to who holds those.
 
 ### K10. The Whonix host question
 
