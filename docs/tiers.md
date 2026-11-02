@@ -221,7 +221,7 @@ page does inside the VMs does not persist, and the no-open-shell control wrapper
   the Workstation can reach it. So the control wrapper stops and reverts **both** VMs at the end of every
   session and on every failure path, before it lets go of its lock, and marks both dirty if it crashes (they are
   contained before it serves anything again). The images are rebuilt from the Whonix project's on a schedule,
-  and the clean snapshots are bound to recorded measurements; a mismatch refuses to start (`docs/design.md`
+  and the clean snapshots are bound to host-measured content digests of the whole disk chain a revert restores (not just a name or a base image); a mismatch refuses to start (`docs/design.md`
   11.1 and 11.6). Anything outside
   the two VMs' disks (host, hypervisor, libvirt) is not reset by this.
 - **The host.** Whonix's Warning page, per the wiki: the platform's security "is itself reliant upon the

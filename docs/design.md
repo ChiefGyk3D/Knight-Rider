@@ -274,6 +274,26 @@ Rules the implementation must keep:
    counter outside its range is rejected as a whole (`internal`), and no text from it is returned.
 6. Nothing in a response is an instruction. There is no `next_action`, `suggested_url` or similar field.
 
+**Backend result variants (closed, separate).** A fetcher or Whonix guest reply to the controller is exactly one
+of two closed variants, discriminated by a constant tag, each with `additionalProperties: false`:
+
+- `content_result`: `{variant: "content", job_nonce, sanitized content fields (title, text, links with labels
+  and `{destination_id, path}`-or-offlist targets), the integer counters of 7.2, offlist_link_count}`. No other
+  string.
+- `redirect_candidate`: `{variant: "redirect", job_nonce, status (integer 301, 302, 303, 307 or 308), target
+  (one string of at most 2,048 bytes)}`. Nothing else, no content, no counters beyond the nonce.
+
+The `target` is the only backend string permitted outside sanitized content. Rules: it is passed **only to the
+controller's strict URL parser and the allowlist matcher (6.3)**, as data, and to nothing else; it is never
+copied into a log line, an error message, a `provenance` field, a model-facing response or a diagnostic (a
+denied redirect is recorded as `{outcome: "denied"}` with no address); it is held in memory for the duration of
+that one authorization decision and then overwritten and dropped, whether or not it passed; a parsed, passing
+target becomes a canonical record and a fresh capability (6.3), and the raw string is not kept. **Tests:** a
+reply with a `target` in a `content_result`, with extra fields in either variant, or with both variants, is
+rejected whole as `internal`; a canary string used as a redirect target is searched for in every response, log
+line, error message and diagnostic of a full run (allowed and denied) and must not appear; the `target` field is
+the only free string a backend reply may carry outside sanitized content (a schema walk asserts it).
+
 ### 4.5 Why ids
 
 The id form of a request (`destination_id` + `path`) keeps addresses out of the conversation and the
@@ -404,15 +424,20 @@ transmitted request line (section 15).
    outproxy is off, 9.3).
 5. **Port** must equal the entry's port, or the scheme default when the entry has none.
 6. **Path canonicalization, then match.** Steps in order:
-   a. The path must start with `/` and contain only unreserved characters, sub-delims, `:`, `@`, `/` and
-      well-formed percent escapes (`%` followed by two hex digits). A malformed escape is
-      `denied_malformed_url`.
-   b. **Decode exactly once.** Each percent escape is decoded one time. If the decoded text still contains a
-      `%` that starts a valid escape, that is a second-decoding ambiguity: reject.
-   c. After that single decoding, **reject** any path containing an encoded separator (`%2F`, `%5C`, in any
-      case), an encoded dot (`%2E` that forms or hides a dot segment), a null (`%00`), a decoded backslash, or
-      any control character.
-   d. Remove dot segments (`.` and `..`) per RFC 3986 section 5.2.4; a `..` that would climb above `/` is
+   a. **Validate escapes without decoding.** The raw path must start with `/` and contain only unreserved
+      characters, sub-delims, `:`, `@`, `/` and well-formed percent escapes (`%` followed by two hex digits). A
+      malformed escape is `denied_malformed_url`.
+   b. **Reject forbidden escapes while they are still encoded** (on the raw text, before any decoding, so the
+      check does not depend on remembering where a character came from). Reject, with `denied_malformed_url`, any
+      escape whose octet is `/` (`%2F`), `\` (`%5C`), NUL (`%00`), any other control octet (`%00` to `%1F`,
+      `%7F`), or `.` (`%2E`) when it is, or sits next to, a dot-segment position (a whole segment made of dots and
+      escaped dots, in any mix). Escape hex digits are compared case-insensitively. A literal backslash,
+      control character or NUL in the raw path is rejected the same way.
+   c. **Reject second-decoding ambiguity** on the raw text: a `%25` followed by two hex digits (an escaped
+      percent that would form a new escape on a second decode) is rejected.
+   d. **Only then decode**, exactly once, the remaining permitted escapes (reserved-safe octets and non-ASCII
+      octets that must be valid UTF-8; invalid UTF-8 is rejected).
+   d2. Remove dot segments (`.` and `..`) per RFC 3986 section 5.2.4; a `..` that would climb above `/` is
       rejected.
    e. Collapse nothing else: repeated slashes (`//`) are kept as written and compared as written.
    f. The canonical path is **re-encoded once** to a fixed form (uppercase hex, unreserved characters left
@@ -424,7 +449,9 @@ transmitted request line (section 15).
       match.
    h. **Query** is refused unless `allow_query: true`; when allowed it is validated and canonicalized the same
       way (decode once, reject second decoding, reject nulls and control characters) and stored.
-7. **Redirects and refresh.** No component follows a redirect. The broker returns the status and raw
+7. **Redirects and refresh.** (Closed-schema note: the redirect target is the single, named exception to
+   "no backend string outside sanitized content", handled by the `redirect_candidate` variant of 4.4, not by
+   weakening the generic rule.) No component follows a redirect. The broker returns the status and raw
    `Location` value; the sanitizer extracts any HTML refresh directive (7.2 step 4a) and reports it as a redirect
    candidate. The controller runs every candidate through rules 1 to 6 as a fresh request, with a fresh
    capability, and follows it only if it passes: at most 3 hops, same session, total time and byte caps shared
@@ -544,7 +571,9 @@ cut cannot split a sequence the rules would have removed.
 
 Each anchor `href` is resolved against the page URL, then run through the allowlist rules 1 to 6 with the same
 code path. A target that passes becomes `{destination_id, path}`; every other target becomes `{offlist: true}`
-and the address is dropped; `offlist_link_count` counts them. The label is passed through steps 9 and 10 and
+and the address is dropped from everything the model sees; `offlist_link_count` counts them. In Phase 1 the
+address is dropped entirely; the Phase 2 candidate envelope in section 12 is the only place a retained
+address may live. The label is passed through steps 9 and 10 and
 cut at 120 characters. At most 100 links are returned. Off-list addresses are deliberately not shown: they
 are the natural payload of an injection ("visit this instead"), and Phase 2 discovery will record them under
 its own gate instead (section 12).
@@ -1289,11 +1318,27 @@ The same rule as 9.8: nothing executable is trusted by name, and startup is refu
   digest-and-signature chain is stored in the repository's pin file and checked before import. How the Whonix
   project signs its KVM images and what to verify is `unverified` (not read); the builder reads the Whonix
   documentation first and records what was done.
-- **Clean snapshots bound to measurements:** at the time the maintainer creates each clean snapshot
-  (`kr-clean`, `kr-clean-gw`), the wrapper records the snapshot's identity, the SHA-256 of the base disk image
-  and of the domain XML (the XML defines devices and so is part of the boundary), and the guest service's
-  digest. Before each session the wrapper recomputes and compares them; a mismatch (a different base image, a
-  changed domain XML, a different snapshot) refuses to start.
+- **Clean snapshots bound to the state that will be restored, measured by the host.** A snapshot name, the
+  base image and the domain XML do not describe the disk state a revert restores, so they are not enough. When
+  the maintainer creates each clean snapshot (`kr-clean`, `kr-clean-gw`) the wrapper records, from the host:
+  1. the **complete qcow2 backing chain** of every disk of the domain (every file, in order) and the SHA-256 of
+     **each file's content** in that chain, including the overlay that holds the snapshot's changes;
+  2. the snapshot's **metadata** (its XML) and its mapping to those exact files, and the domain XML hash;
+  3. **no memory snapshot is used** (disk-only, so the guest boots from the measured disk state); a memory
+     snapshot is forbidden unless its complete state file is also measured, which Phase 1 does not do;
+  4. the guest service's digest, as a tripwire only.
+  Before each session, after each revert and again before the lock is released, the wrapper recomputes the
+  chain, the per-file digests and the metadata mapping and compares them with the record; a mismatch (a
+  replaced or modified overlay, a changed chain, a snapshot that maps to different files, a changed XML)
+  refuses to start and powers the domains off. The clean snapshot artifacts are made **immutable to the
+  runtime identity** where the host allows it (owned by a different user, read-only, or marked immutable), and
+  the measurement is on content, not on name or timestamp. Digesting multi-gigabyte images takes time; the
+  wrapper may cache a digest against the file's inode and change time only if the files are immutable to the
+  runtime identity, and re-digests otherwise (`inferred`: cost is acceptable for a one-session-at-a-time tier).
+  **Test (libvirt and files stubbed):** record the measurements, then substitute or mutate the overlay or a
+  backing file while preserving the snapshot name, the base image and the domain XML, and assert startup
+  refuses and the sentinel content never reaches a session; also a changed backing-chain order, an added
+  memory snapshot and a metadata that points at other files.
 - **Guest service:** `kr-guest-fetch` is installed from a build whose digest is recorded; the wrapper reads
   the running service's digest through the vsock hello before the first permit and refuses on mismatch. A
   compromised guest could lie about this, which is why the check is a tripwire and not a boundary; the revert
@@ -1327,6 +1372,20 @@ to change when it arrives. The maintainer's approved record is exactly **livenes
 - **Discovery records are never fetchable or expandable.** No verb accepts a discovery record or its address
   as a fetch target, and no link found while recording a candidate creates another candidate. The only way a
   destination becomes fetchable is the maintainer promoting it into the allowlist file by hand.
+- **Where the candidate lives (reserved internal envelope, never model-facing).** Phase 2 needs the address
+  to check liveness, so the contract reserves a closed, **internal-only** `candidate` envelope held in
+  **controller memory for the run only**: `{request_id (the authorized fetch it came from), response_nonce (that
+  response's job nonce), canonical_target (the candidate as extracted by the controller's strict URL parser from
+  a link in that response), extraction_proof (the index of the link in that response's sanitizer link list and the
+  response's raw digest), capability (single-use, non-fetchable: it permits one liveness check and nothing
+  else, and is not a fetch capability of 9.2)}`. It: never enters a model-facing response or a log; cannot be
+  supplied or influenced by the model (no verb takes it); expires when its response's session or run ends and is
+  erased then; cannot be created from a discovery check's own response (the controller refuses to extract
+  candidates from a response whose capability is a discovery capability); and exists only to produce the
+  three-field record. The record's **key** is a keyed hash of `canonical_target` (same HMAC discipline as 8.1);
+  the address itself is not persisted by this contract. Whether the Phase 2 database stores more is its own
+  gate (#4). **Test:** the envelope never appears in any public response or log (canary search); a response from a
+  discovery check yields no envelope; an envelope whose `response_nonce` does not match its source is rejected.
 - **Test (when built):** feed the lane a candidate whose only source is another candidate, and a link found
   in a response that was itself produced by recording a candidate, and assert no record is created in either
   case; feed a record with an extra field and assert it is rejected.
@@ -1388,7 +1447,8 @@ Tests are hermetic: no real Tor or I2P, no real proxy. A fake SOCKS5 and HTTP pr
   percent-encoded host, `..` traversal, wrong port, wrong scheme, suffix confusion (`placeholder.onion.example`),
   and a redirect to an off-list host. Path canonicalization: a sibling sharing a prefix (`/docs-old` against
   `/docs/`), encoded separators and dots, an encoded null, a doubly encoded escape, repeated slashes,
-  dot-segment climbs, a malformed escape, and mixed case in hex; plus a **round-trip test** that the canonical
+  dot-segment climbs, a malformed escape, and mixed case in hex; **each forbidden form must be asserted to
+  return `denied_malformed_url`** (the denial itself, not just a consistent transmitted path); plus a **round-trip test** that the canonical
   path the matcher authorized is byte-identical to the path in the request line the broker sends. Missing,
   empty, oversized, duplicate-key and alias-bearing files.
 - **Allowlist loading:** a symlink at the file, at a parent directory, and at the last component; a parent
