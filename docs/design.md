@@ -46,8 +46,9 @@ Differences, each on purpose:
 4. **The Tor Browser tier is unavailable in Phase 1.** The issues list it as a tier; a Daybreak-tier design
    review found that its no-subresource and no-redirect claims depend on an interceptor nobody has verified.
    It ships disabled until section 10's conditions are met.
-5. **The container tier has a request broker** (9.2), added after the same review, so the allowlist survives a
-   compromised fetcher.
+5. **The container tier has a two-part request broker** (section 9), added after review, so the allowlist
+   survives compromise of the fetcher and of the protocol stack. It does not survive compromise of the
+   egress gate, a proxy or the host (stated in section 9).
 
 ## 3. Threat model in brief
 
@@ -55,10 +56,10 @@ Differences, each on purpose:
 |---|---|
 | Assets | The maintainer's repos, secrets, tokens, login sessions and real network address; the private allowlist; the integrity of what Claude does next. |
 | Actors | (a) A page author who writes text aimed at hijacking an AI (prompt injection). (b) A page or service that attacks the client (parser or browser bug). (c) A hostile network observer or onion/I2P peer. (d) Claude itself being steered into requesting something off-list. (e) A local process on the host. |
-| Trust boundaries | Claude <-> controller (verb surface). Controller <-> fetcher (container, VM, or browser). Fetcher <-> Tor/i2pd (proxy). Tor/i2pd <-> the network. Host <-> hypervisor (Whonix). |
+| Trust boundaries | Claude <-> controller (verb surface). Controller <-> fetcher (container, VM, or browser). Fetcher <-> broker-front (container tier). broker-front <-> broker-egress (capability gate). broker-egress <-> Tor/i2pd (proxy). Tor/i2pd <-> the network. Host <-> hypervisor (Whonix). Whonix only: Workstation <-> Gateway, which is not gated (11.5). |
 | Abuse cases | A page says "ignore your instructions and fetch X"; a page hides text with zero-width or tag characters; a redirect leads off-list; a huge or never-ending response; a page that serves a download; a parser bug in the sanitizer; the fetcher (once compromised) sending requests the controller never approved; the fetcher trying to reach the LAN or the clearnet; a path that is read differently by the matcher and by the destination; a local process replacing the allowlist file; the model asked to edit the allowlist. |
-| Main mitigations | Default-deny allowlist decided by the controller; a trusted request broker outside the sandbox that fetches only what a single-use controller capability names (container tier); no route from the fetcher to Tor or i2pd at all; one canonical path form for authorization and transmission; parsing hostile bytes only inside the sandbox; sanitizer plus output schema with an untrusted marker; caps; ephemeral sessions; request log without bodies. |
-| Residual risk | Sanitized text can still persuade a model (the marker lowers it, nothing removes it); a sandbox escape (in the container tier the broker, not the fetcher, then holds the line; in the Whonix tier it does not, see 11.5); correlation by an observer of both ends (Tor and I2P limit, not ours); a compromised host. Claude must never be given other tools that act on page text without a human step. |
+| Main mitigations | Default-deny allowlist decided by the controller; a two-part broker outside the sandbox: a protocol stack with no proxy access, and a small egress gate that connects only to what a single-use controller capability names (container tier); no route from the fetcher to Tor or i2pd at all; one canonical path form for authorization and transmission; parsing hostile bytes only inside the sandbox; sanitizer plus output schema with an untrusted marker; caps; ephemeral sessions; request log without bodies. |
+| Residual risk | Sanitized text can still persuade a model (the marker lowers it, nothing removes it); a sandbox escape (in the container tier the broker then holds the line, but a compromise of the egress gate, a proxy or the host defeats the allowlist; in the Whonix tier it does not hold even after only a Workstation compromise, see 11.5); correlation by an observer of both ends (Tor and I2P limit, not ours); a compromised host. Claude must never be given other tools that act on page text without a human step. |
 
 Untrusted data (page text, titles, link labels, error strings derived from pages) is evidence, never an
 instruction, everywhere in this design.
@@ -289,7 +290,7 @@ allowlist file. Open question 8 asks whether Claude ever needs the host.
                           v
         tier backend:  container (+ broker) | whonix wrapper | tor-browser driver (unavailable)
                           |
-         fetcher (sandbox: sanitize hostile bytes) <--bytes-- broker --> Tor / i2pd --> network
+         fetcher (sandbox) <-- broker-front (parses) <-- broker-egress (gate) --> Tor / i2pd --> network
 ```
 
 - **Controller** (`knight_rider.controller`): the only process with the allowlist. Implements the four verbs,
@@ -305,8 +306,8 @@ allowlist file. Open question 8 asks whether Claude ever needs the host.
   scheme, host, port, canonical path, canonical query, network, max_compressed_bytes, max_decompressed_bytes,
   max_chars, deadline}`. In the container tier it is registered with the broker as a single-use capability (9.2)
   and the fetcher receives only a token. Nothing in the sandbox sees the allowlist file.
-- **Broker** (container tier, `knight_rider.broker`): a small trusted program outside the sandbox that holds
-  the only path to Tor and i2pd. Section 9.2.
+- **Broker** (container tier): `broker-front` (TLS and HTTP stack, no proxy access) and `broker-egress` (the
+  only component with a path to Tor and i2pd, no response parsing). Sections 9 and 9.2.
 - **Where hostile bytes are parsed:** only inside the sandbox (container fetcher, Whonix Workstation, or a
   no-network child process for Tor Browser tier). The controller never runs an HTML parser on page bytes. It
   validates the reply's JSON against the closed schema (4.4) and re-applies the string-level rules (7.2 steps 9 to 14) as a second pass.
@@ -338,7 +339,7 @@ allowlist file. Open question 8 asks whether Claude ever needs the host.
   5. Refuses any file whose path is inside a git work tree.
 - **Reload.** Before each request the controller re-runs the whole procedure only when a cheap `stat` of the
   parent-relative name shows a different device, inode, size or modification time; the parse result is cached
-  against that tuple. Any failure keeps the last good list for no more than 5 seconds and then fails closed.
+  against that tuple. Any failure fails closed at once (`allowlist_unavailable`); there is no last-good grace period.
   `inferred`: Python exposes `os.open` with `dir_fd` and `os.fstat`, which is enough for this on Linux; the
   builder confirms the flags on the target platform.
 - The tool never writes the file and no verb can. Agents never edit it.
@@ -572,99 +573,138 @@ browser profile or one VM boot (other tiers).
 
 ## 9. Container tier (build first)
 
-The container tier now includes a **request broker** (a review finding). The earlier draft let the fetcher
-reach the Tor and i2pd proxies directly and checked the allowlist only in the controller and in the fetcher's
-own code. The fetcher is the component that parses hostile bytes, so it must be assumed breakable; a broken
-fetcher that can reach a general proxy can send any request, including off-list ones the controller never saw.
-The broker is the component that makes the allowlist survive a fetcher compromise.
+The container tier includes a **request broker**, now split in two (review findings, rounds 1 and 2). The
+fetcher parses hostile bytes, so it is assumed breakable; a broken fetcher that could reach a proxy could send
+any request. The broker keeps the fetcher away from the proxies. But a broker that terminates TLS and parses
+HTTP responses, headers and gzip is itself exposed to hostile bytes, so one broker process holding both the
+parsers and the proxy access would only move the problem. Hence two parts with different jobs:
+
+- **`broker-front`** (the protocol stack): TLS (only for `https` entries), HTTP/1.1 response parsing, header
+  handling, chunked and gzip decoding, and byte-limit enforcement. It handles hostile bytes. It has **no
+  network path to Tor or i2pd** and no control socket.
+- **`broker-egress`** (the capability gate): the only component with a path to the proxies. It does not parse
+  responses. It opens one connection per single-use capability, to exactly the capability's network, host and
+  port, and then relays bytes blindly while counting them and enforcing the deadline.
+
+**What survives what, stated plainly:**
+
+| Compromised component | Allowlist (host, port, network) | Path and request | Other |
+|---|---|---|---|
+| fetcher | Holds | Holds | It can ask once for the one page it was authorized to fetch. |
+| `broker-front` | Holds (it has no path to a proxy; `broker-egress` accepts only a registered single-use capability and connects only to its host and port) | Holds for `http` entries (`broker-egress` writes the fixed request head itself); **does not hold for `https` entries**, where the encrypted request is built in `broker-front` and can name another path on the same authorized host | It can serve altered bytes to the fetcher, which is why the fetcher's output is still untrusted. |
+| `broker-egress` | **Does not hold.** It holds the proxy connections. | Does not hold | This is a small trusted component: a fixed-size SOCKS exchange and a byte relay, no TLS, no HTTP, no decompression. |
+| a proxy (Tor or i2pd) | Does not hold for its own network | Does not hold | Treated as untrusted network software; it is pinned (9.8) and sits behind `broker-egress` only. |
+| the controller or host | Does not hold | Does not hold | Out of the container tier's boundary. |
+
+So the claim is: **the allowlist survives compromise of the fetcher and of the protocol stack, not of
+`broker-egress`, a proxy or the host.** An earlier draft said it survived a broker compromise; that was wrong
+for a single broker process and is withdrawn.
 
 ### 9.1 Topology
 
-Four containers, three networks, two socket directories. A builder implements this from this section.
+Five containers, three networks, three socket directories.
 
 ```
-  kr_internal (internal: true, no route out)       kr_proxy (internal: true)       kr_egress (bridge)
- +-----------------------+                        +---------------------------+
- |  fetcher ----------------> broker ------------> tor  (also on kr_egress) ---------> clearnet
- |  (no other address)   |    (on both)  ------> i2pd (also on kr_egress) ---------> clearnet
- +-----------------------+                        +---------------------------+
+ kr_internal (internal: true)           kr_proxy (internal: true)           kr_egress (bridge)
+ +--------------------------+          +--------------------------+
+ | fetcher --> broker-front |--socket->| broker-egress --> tor  (also on kr_egress) --> clearnet
+ | (only kr_internal)       | (shared  |        \-------> i2pd (also on kr_egress) --> clearnet
+ +--------------------------+  dir)    +--------------------------+
 ```
 
 - `kr_internal`: Compose `internal: true`. `verified (read 2026-11-02)`: Docker Compose networks
   reference: "`internal`, when set to `true`, lets you create an externally isolated network", and networks
-  otherwise have external connectivity by default. Attached: `fetcher` and `broker`.
-- `kr_proxy`: also `internal: true`. Attached: `broker`, `tor`, `i2pd`. The **fetcher is not on this network**,
-  so it cannot address Tor or i2pd at all.
+  otherwise have external connectivity by default. Attached: `fetcher` and `broker-front`.
+- `kr_proxy`: also `internal: true`. Attached: `broker-egress`, `tor`, `i2pd`. Neither the fetcher nor
+  `broker-front` is on it.
 - `kr_egress`: an ordinary bridge. Attached: `tor` and `i2pd` only.
-- **Exact flow matrix** (everything not listed is dropped; see 9.5 for the enforcement):
+- `broker-front` and `broker-egress` talk over a Unix socket in a directory mounted into those two containers
+  only. They share no network.
+- **Exact flow matrix** (everything not listed is dropped; enforcement in 9.4):
 
-| From | To | Port | Purpose |
+| From | To | Port or channel | Purpose |
 |---|---|---|---|
-| fetcher | broker | one fixed port on `kr_internal` | present a capability, receive bytes |
-| broker | tor | the SOCKS port on `kr_proxy` | onion fetches |
-| broker | i2pd | the HTTP proxy port on `kr_proxy` | eepsite fetches |
-| tor | internet | outbound only, public addresses | Tor relays |
-| i2pd | internet | outbound only, public addresses | I2P peers, reseed |
-| controller (host) | broker | control socket (Unix) | register a capability, collect a verdict |
+| fetcher | broker-front | one fixed port on `kr_internal` | present a token, receive bytes |
+| broker-front | broker-egress | Unix socket (not a network flow) | present a token, stream bytes |
+| broker-egress | tor | the SOCKS port on `kr_proxy` | onion connections |
+| broker-egress | i2pd | the HTTP proxy port on `kr_proxy` | eepsite connections |
+| tor, i2pd | internet | outbound only, per the policy in 9.4 | Tor relays, I2P peers, reseed |
+| controller (host) | broker-egress | control socket (Unix) | register a capability |
 | controller (host) | fetcher | work socket (Unix) | hand over a job, collect sanitized JSON |
 
-  There is no flow from the fetcher to tor, to i2pd, to the egress network, to the host, or to the other
-  containers' other ports. There is no inbound flow from the internet to any container.
-- **Unix sockets.** Two dedicated directories, each mode 0700 and owned by the container's uid: the work
-  socket directory (mounted into the fetcher and visible to the host controller) and the control socket
-  directory (mounted into the broker and visible to the host controller). They are separate directories so
-  the fetcher never sees the control socket. Neither contains anything else. Reason for sockets over
-  published ports: the Docker Compose reference I read on 2026-11-02 says nothing about publishing ports from
-  an internal-only network (`inferred`: it may not work), and a loopback port adds a listening surface.
+  There is no flow from the fetcher to `broker-egress`, tor, i2pd, the egress network, the host or other
+  containers' other ports; none from `broker-front` to tor or i2pd; and no inbound flow from the internet.
+- **Unix sockets.** Three dedicated directories, each mode 0700 and owned by the relevant uid: the work socket
+  directory (fetcher and host controller), the control socket directory (`broker-egress` and host controller),
+  and the front-to-egress directory (`broker-front` and `broker-egress`). No directory holds anything else.
+  Reason for sockets over published ports: the Docker Compose reference I read on 2026-11-02 says nothing
+  about publishing ports from an internal-only network (`inferred`: it may not work), and a loopback port adds a
+  listening surface.
 - The host controller never receives the Docker socket (a Docker socket is root on the host). Starting and
   stopping the stack is a maintainer action (`docker compose up -d`), not a verb.
 
-### 9.2 The request broker
+### 9.2 The broker in detail
 
-The broker is a small, separate program (not the fetcher image). It is trusted code with a deliberately small
-interface, no HTML parsing, and no sanitizer. **Fail closed:** any malformed message, unknown token, expired
-token, limit hit or internal error ends the connection with no body.
+**Fail closed:** any malformed message, unknown token, expired token, limit hit or internal error ends the
+connection with no body.
 
-**Capability.** For each request (and for each redirect hop) the controller, after authorizing it, registers
-with the broker, over the control socket, one capability:
+**Capability.** For each request (and each redirect hop) the controller, after authorizing it, registers
+with `broker-egress`, over the control socket, one capability:
 
-`{token, session_key, scheme, host, port, canonical_path_and_query, network, max_compressed_bytes,
-max_decompressed_bytes, deadline_ms, expires_at, uses: 1}`
+`{token, session_key, scheme, host, port, request_head (http entries: the canonical GET request head bytes),
+canonical_path_and_query, network, max_compressed_bytes, max_decompressed_bytes, max_header_bytes,
+deadline_ms, expires_at, uses: 1}`
 
-where `token` is 32 random bytes from the controller. The capability is **single-use** and expires after 120
-seconds or on first presentation, whichever is first. The broker holds capabilities in memory only.
+`token` is 32 random bytes from the controller. The capability is single-use and expires after 120 seconds or
+on first presentation, whichever is first. `broker-egress` keeps capabilities in memory only.
 
-**Fetcher request.** The fetcher connects to the broker and sends only `{token}`. It names no host and no
-path. The broker looks up the capability, deletes it, and builds the request **itself** from the capability's
-stored fields:
+**Fetcher request.** The fetcher connects to `broker-front` and sends only `{token}`. It names no host and no
+path. `broker-front` hands the token to `broker-egress` over their socket. `broker-egress` looks it up, deletes
+it, opens the connection through Tor (SOCKS5 with remote hostname resolution, username derived from
+`session_key` for circuit isolation) for `.onion`, or through the i2pd HTTP proxy for `.i2p`. It never
+resolves the host. For `http` entries it writes the stored request head itself: `GET` of the canonical path
+exactly as stored, fixed headers `Host`, `User-Agent: Knight-Rider`, `Accept: text/html,text/plain;q=0.8`,
+`Accept-Language: en`, `Accept-Encoding: identity, gzip`, `Connection: close`; no cookies, `Referer`,
+`Authorization`, other method or body. For `https` entries it relays the TLS stream and `broker-front` builds the
+same request inside TLS (the residual in the table above).
 
-- It connects to Tor by SOCKS5 with remote hostname resolution (username derived from `session_key` for
-  circuit isolation) for `.onion`, or to the i2pd HTTP proxy with an absolute-form request line for `.i2p`. It
-  never resolves the host.
-- It sends `GET` of the canonical path string exactly as stored (6.3), with a fixed header set: `Host`,
-  `User-Agent: Knight-Rider`, `Accept: text/html,text/plain;q=0.8`, `Accept-Language: en`,
-  `Accept-Encoding: identity, gzip`, `Connection: close`. No cookies, no `Referer`, no `Authorization`, no
-  other method, no body.
-- It enforces the **streaming transport gate** (10.2) itself: compressed and decompressed byte limits, the
-  total deadline, the content gate on headers (7.2 step 2) before any body byte is forwarded, and it never
-  follows a redirect. On a violation it closes both sides.
-- It returns to the fetcher `{status, content_type, location (raw, unauthorized), body_bytes}` where the body
-  is the decompressed body within the limit. The fetcher parses and sanitizes it. The fetcher gets bytes and
-  a status; it gets no handle to Tor.
+**Reducing `broker-front`'s exposed surface.**
 
-**What a broken fetcher can still do.** It can present a token it has been given (one per job, single use),
-which fetches exactly the authorized page again at most once, and it can lie in its own output (the controller
-re-checks the output, 7.4, but cannot detect a lie about page content; see residual risk in section 3). It
-cannot make the broker fetch anything else, cannot reuse a token, cannot choose headers or path, cannot reach
-Tor or i2pd, and cannot reach the host or LAN.
+- Separate image, separate container, **unprivileged uid, read-only root, no capabilities, no network to the
+  proxies**, no control socket, no allowlist, nothing mounted from the host (same hardening as 9.3).
+- A **minimal hand-written HTTP/1.1 response reader** limited to what is needed: status line, a bounded
+  header block, `Content-Length`, `Transfer-Encoding: chunked`, `Content-Encoding: gzip`. No HTTP/2, no
+  upgrade, no trailers, no pipelining, no connection reuse. Anything else closes the connection. (`inferred`: a
+  hand-written reader in a memory-safe language is smaller than a general HTTP client; the builder picks the
+  language and records the choice.)
+- TLS only for `https` entries, through the language's standard library, verifying certificates (9.6 step 5).
+- A decompressor with hard output limits (streaming, stop at the limit).
+- It never follows a redirect, never parses HTML and never sees the allowlist.
+- It returns to the fetcher `{status, content_type (enum or none), location (raw, unauthorized), body_bytes}`
+  where the body is the decompressed body within the limit.
 
-**Broker hardening.** Same container settings as the fetcher (9.3). `tor` and `i2pd` accept connections only
-from the broker (9.4). The broker writes nothing to disk. The broker logs only counts and codes (no paths);
-the controller keeps the request log (8.1).
+**Framing and parsing limits at the hostile boundary** (all enforced incrementally, before parsing or
+allocating, with immediate close on the first excess byte; values in section 13):
+
+- status line: at most 256 bytes; total header block: at most 16 KiB; header count: at most 64; any single
+  header line: at most 4 KiB; one `Location` or `Refresh` value: at most 2,048 bytes (the URL length cap);
+- chunk-size lines at most 32 bytes; chunk trailers are rejected;
+- read inactivity timeout 15 s and a total deadline for the whole exchange;
+- decompression ratio is bounded by the decompressed byte limit, not by a ratio guess.
+
+The same discipline applies at every other hostile boundary in this design: the capability message from the
+controller (at most 4 KiB), the token message from the fetcher (at most 128 bytes), the fetcher's JSON reply
+(9.6), and the Whonix vsock reply (11.2). Each is read with a fixed maximum frame size announced in a length
+prefix that is itself bounded, read incrementally with the maximum enforced as bytes arrive, and decoded with a
+bounded incremental decoder, never "read to end, then parse". A frame over its maximum, an incomplete frame
+at the deadline, or a length prefix over its maximum closes the connection and returns the matching error
+code.
+
+**What a broken fetcher can still do.** Present the one token it was given, once. It cannot name a host, path or
+header, cannot reuse a token, cannot reach any proxy, and cannot reach the host or LAN.
 
 **Why the controller is not the broker.** The controller holds the allowlist and runs on the host with the
-maintainer's session. A network-facing component that talks to Tor should not run there. Putting the broker in
-a container keeps the host without a network path and keeps the allowlist off the network-facing side.
+maintainer's session. Network-facing and parsing components do not run there.
 
 ### 9.3 Container specification
 
@@ -683,8 +723,11 @@ a container keeps the host without a network path and keeps the allowlist off th
 | networks | `kr_internal` only |
 | restart | `unless-stopped`; healthcheck is a local `status` call |
 
-**broker**: same hardening as the fetcher; `mem_limit: 256m`, `pids_limit: 64`; mounts the control socket
-directory only; networks `kr_internal` and `kr_proxy`.
+**broker-front**: same hardening as the fetcher; `mem_limit: 256m`, `pids_limit: 64`; mounts the front-to-egress
+socket directory only; network `kr_internal` only.
+
+**broker-egress**: same hardening; `mem_limit: 128m`, `pids_limit: 32`; mounts the control socket directory and
+the front-to-egress directory only; network `kr_proxy` only. No TLS, HTTP or decompression code in this image.
 
 `verified (read 2026-11-02)`: Compose services reference documents `read_only`, `cap_drop`, `security_opt`
 (with `no-new-privileges`), `tmpfs`, `mem_limit`, `pids_limit`, `cpus` and `user`.
@@ -694,7 +737,7 @@ container's `kr_proxy` address (not `0.0.0.0`):
 
 ```
 SocksPort <kr_proxy address>:9050 IsolateSOCKSAuth
-SocksPolicy accept <broker address>
+SocksPolicy accept <broker-egress address>
 SocksPolicy reject *
 ClientOnly 1
 SafeSocks 1
@@ -767,21 +810,53 @@ I2P is usually not a secret and the design hides what you are doing. `ssu2.proxy
 Tor does not provide UDP SOCKS (`inferred`: from the tor(1) `SocksPort` and `DNSPort` descriptions, which
 cover TCP streams and DNS only), so Tor cannot be that proxy.
 
-### 9.4 Per-container filtering
+### 9.4 Per-container filtering and the egress address policy
 
 Network attachment alone is not a flow policy, so each container carries its own packet filter (`inferred`:
 nftables rules installed in the container's network namespace by the stack's init step, or, if the runtime
 cannot do that, host rules scoped to the stack's bridge interfaces; the builder picks one and documents it).
-Default policy is drop in both directions. The rules are exactly the matrix in 9.1:
+Default policy is drop in both directions, for IPv4 and IPv6. The rules are exactly the matrix in 9.1:
 
-- `fetcher`: outbound only to the broker's single port; no inbound.
-- `broker`: inbound only from the fetcher on that port; outbound only to the tor SOCKS port and the i2pd HTTP
-  proxy port; the control socket is a Unix socket and not a network flow.
-- `tor`, `i2pd`: inbound on `kr_proxy` only from the broker on the one listener; outbound on `kr_egress` to
-  public addresses only. Drop RFC 1918, link-local, loopback and ULA destinations so a compromised proxy
-  container cannot reach the LAN; drop all traffic to other containers except the broker.
-- Installation and test of host-level rules is done on a plan with a dry run and the maintainer's explicit
-  go, never against his live firewall (open question 13).
+- `fetcher`: outbound only to `broker-front`'s single port; no inbound.
+- `broker-front`: inbound only from the fetcher on that port; no outbound network flows at all (its only
+  outbound channel is the Unix socket to `broker-egress`).
+- `broker-egress`: no inbound network flows (its sockets are Unix); outbound only to the tor SOCKS port and
+  the i2pd HTTP proxy port.
+- `tor`, `i2pd`: inbound on `kr_proxy` only from `broker-egress` on the one listener; outbound on `kr_egress`
+  as defined below; drop all traffic to other containers except `broker-egress`.
+
+**Egress address policy ("public addresses only", made exhaustive).** The invariant is stated on the
+**normalized destination address**, not on a list of ranges the builder remembers:
+
+1. Normalize first: an IPv4-mapped IPv6 address (`::ffff:a.b.c.d`) and IPv4-compatible forms are converted to
+   the IPv4 address and judged by the IPv4 rules; zone identifiers are rejected. This is done by the packet
+   filter's address families, not by string matching.
+2. **Allow only global-unicast destinations** that are not in the IANA special-purpose address registries for
+   IPv4 and IPv6 (read the registries when building: they are the maintained source, and the builder records the
+   retrieval date and version in the repository; `unverified` today, I did not read them). Deny, for both
+   families, every special-purpose block including: unspecified, loopback, "this network", private-use
+   ranges, shared address space (carrier-grade NAT), link-local, IETF protocol assignments, documentation
+   ranges, benchmarking, 6to4 relay and translation prefixes, unique-local, multicast (all scopes) and the
+   reserved and broadcast blocks.
+3. **Deny every directly connected route** of the host and of the stack's own bridges, whatever their
+   addresses, and the specific infrastructure addresses: the bridge gateway addresses, the container runtime's
+   embedded resolver address, the host's own addresses on every interface, and the cloud or hypervisor metadata
+   address if any. These are read from the running host at start, not hard-coded, and a mismatch between the
+   recorded and the live set refuses startup.
+4. The policy is **deny by default with an explicit allow of global unicast**, not an allow with a deny list,
+   so a block added to a registry later is not silently reachable.
+
+**Tests, one per class** (hermetic; a stub destination is bound on a test address of each class, and a connect
+from inside the tor and i2pd containers' namespaces must fail): loopback, private-use, shared address space,
+link-local, documentation, benchmarking, multicast, broadcast, unique-local, IPv6 link-local, an IPv4-mapped
+IPv6 form of each IPv4 class, a destination inside a directly connected non-RFC-1918 route created for the
+test, the bridge gateway, the resolver address and the host's own address. A test also asserts that a stub on a
+documentation-class global-looking address that is **not** in the allow set is denied, and that an address in
+the allow set is accepted. A policy test fails if the registry copy the build recorded is older than the
+maintainer's chosen limit.
+
+Installation and test of host-level rules is done on a plan with a dry run and the maintainer's explicit go,
+never against his live firewall (open question 13).
 
 ### 9.5 Hermetic port-enumeration tests
 
@@ -794,11 +869,21 @@ The test suite proves the flow matrix without any real Tor or I2P:
   fails the test.
 - **Reachability scan from the fetcher:** from inside the fetcher's namespace, attempt a TCP connect and a UDP
   probe to every address and every port of the other containers on both networks, and to the host gateway and
-  a LAN address. Assert only the broker port answers.
-- **Broker tests:** unknown, expired and reused tokens; a token for host A used to fetch host B (the broker
+  a LAN address. Assert only `broker-front`'s port answers.
+- **Broker tests:** unknown, expired and reused tokens; a simulated compromise of `broker-front` after a
+  hostile response, which then tries to reach a proxy and to present a second request (neither may succeed),
+  and the same for the fetcher; `broker-egress` connecting only to the capability's host and port; a token for host A used to fetch host B (the broker
   takes no host from the fetcher, so the test asserts none can be supplied); a redirect response is returned
   and not followed; oversized, compressed-bomb and never-ending responses cut at the limit; a malformed
-  message; a slow-loris client; the content gate on a non-text type.
+  message; the framing cases below; a slow-loris client; the content gate on a non-text type.
+- **Framing and parsing limits (hermetic oversized and incomplete frames), at every hostile boundary:** an
+  endless status line, an endless header block, too many headers, one over-long header, an endless `Location`,
+  an oversized chunk-size line, a chunk trailer, a message from the controller or the fetcher over its frame
+  maximum, a length prefix over its maximum, an incomplete frame left open until the deadline, an oversized
+  fetcher JSON reply, and an oversized or delayed Whonix vsock reply. Each must close the connection before
+  parsing past the limit, and a memory probe asserts no allocation above the cap.
+- **Real binaries, not stubs:** the listener-enumeration test must run the shipped images with their shipped
+  configuration and external egress denied; a stub-only pass does not count.
 - **Static topology test:** parse the compose file; fail if the fetcher is on any network other than
   `kr_internal`, if `kr_internal` or `kr_proxy` is not `internal: true`, if the fetcher has any mount other than
   the work socket directory, any capability, a writable root, or no limits.
@@ -807,11 +892,13 @@ The test suite proves the flow matrix without any real Tor or I2P:
 
 1. Read one job from the work socket: `{token, request_id, network, caps}`, schema-checked, unknown fields
    refused. The job names no host.
-2. Connect to the broker, present the token, receive `{status, content_type, location, body_bytes}`.
+2. Connect to `broker-front`, present the token, receive `{status, content_type, location, body_bytes}`.
 3. If the status is a redirect, return `{status, location}` to the controller for judgment (6.3 rule 7); do not
    fetch anything. If the broker closed the stream or reported a violation, return the matching error code.
 4. Otherwise run the sanitizer (section 7) on the body, then write the JSON reply on the work socket,
-   including the `job_nonce` the controller supplied (11.1 uses the same nonce discipline).
+   including the `job_nonce` the controller supplied (11.1 uses the same nonce discipline). The controller
+   reads that reply with the framing discipline of 9.2: a frame of at most 256 KiB, incremental bounded
+   decoding, a read and a total deadline, close on the first excess byte.
 5. TLS for `https` onion entries: the broker's connection verifies against the system trust store by default.
    Many onion sites use self-signed certificates or none; another model is an open question (7) and is not
    implemented in Phase 1.
@@ -822,6 +909,28 @@ No JavaScript, no CSS, no images, no fonts, no WebSocket, no HTTP/2 push; only `
 read pages that need a script to produce their text; they come back near-empty and the controller sets a
 `removed` count so that is visible. If the maintainer needs those pages, a browser-based tier is the only
 route, and that tier is unavailable in Phase 1 (section 10).
+
+### 9.8 Pinning every executable artifact
+
+Every executable artifact in the container tier is pinned, and **startup is refused on any mismatch** (the
+controller or the stack's init step checks; a mismatch is `tier_unavailable`, never a warning):
+
+- **Base images** (fetcher, `broker-front`, `broker-egress`, tor, i2pd): referenced by immutable digest
+  (`image@sha256:...`), never by a tag. The digests live in one file in the repository, reviewed in the pull
+  request that changes them. Where the publisher provides a signature, the signature is verified when the
+  digest is recorded and the verifier and key identity are recorded next to it.
+- **Built images:** built from the pinned base with the dependency set below, reproducibly where the toolchain
+  allows (`inferred`), and run by digest. The recorded digest of each built image is checked at start.
+- **Dependencies:** lockfiles with content hashes (for Python, a hash-pinned requirements file installed with
+  hash checking turned on), no unpinned transitive dependency, no install-time network fetch of unpinned code.
+  The GYST `python-ci` and `security` workflows already cover the Python side (`inferred`: confirm what they
+  check).
+- **Tor and i2pd packages:** installed from the pinned base's package set or from a verified release, with the
+  version recorded; no package manager call at container start.
+- **Configuration files:** their hashes are recorded and checked at start (the configs in 9.3 are
+  security-relevant executable policy).
+- **Test:** a test substitutes a mutable tag, an image with a different digest, a dependency with a different
+  hash and an altered config, and asserts that startup refuses each.
 
 ## 10. Tor Browser tier (build last): unavailable until the interceptor is verified
 
@@ -948,9 +1057,18 @@ KVM page "is only supported by the community".
 session request returns `busy`. (More than one session would need each session to own a distinct
 Workstation and Gateway pair; that is not designed for Phase 1.) The wrapper takes an exclusive **host lock**
 (a lock file held with `flock`, in a directory only the controller's user can write) around the whole
-sequence: revert, boot, readiness check, fetch(es), teardown, final revert. The lock is held until the final
-revert and the readiness check after it complete. If the wrapper dies holding the lock, the next start treats
-the Workstation as dirty and reverts before doing anything else.
+sequence: revert both, boot, readiness check, fetch(es), teardown, stop and revert **both** the Workstation and
+the Gateway. The lock is released only when both domains are confirmed in the clean snapshot state (reverted,
+and stopped or ready as configured). This end-of-session sequence also runs on **every failure path**: a
+timeout, a sanitizer failure, a bad nonce, a framing violation, a guest crash, `kr_session_end`, idle expiry
+and controller shutdown. If a revert itself fails, the domains are powered off and both stay marked dirty.
+**Crash safety:** before any session work the wrapper writes a dirty marker for **each** domain (Workstation
+and Gateway) to a state file in its private directory, and clears each marker only after that domain's revert
+is confirmed. On start, and before accepting `status`, `screenshot` or `fetch`, a wrapper that finds either
+marker (or a stale lock) contains both domains (power off, revert) first. Tests with libvirt stubbed: mark the
+Gateway compromised mid-session and invoke session end (both reverted before the lock is released); kill the
+wrapper mid-session and restart (both contained before any verb is served); fail the Gateway revert (both
+stay powered off and dirty).
 
 **Nonces on replies.** Each `fetch` carries a fresh `request_nonce` from the controller. The guest service
 echoes it and also returns a `boot_nonce` that the wrapper read from the guest right after the revert (a value
@@ -965,7 +1083,7 @@ The Workstation runs a small service `kr-guest-fetch` that listens on an `AF_VSO
 attribute defaults to virtio ... the optional attribute address of the cid element specifies the CID assigned
 to the guest. If the attribute auto is set to yes, libvirt will assign a free CID automatically ... Since
 4.4.0"; example `<vsock model='virtio'><cid auto='no' address='3'/></vsock>`. The wrapper connects from the
-host to the guest CID and port, sends one permit, and reads one JSON reply. A vsock channel is not a network
+host to the guest CID and port, sends one permit, and reads one JSON reply under the framing discipline of 9.2 (a frame of at most 256 KiB, a bounded length prefix, incremental bounded decoding, read and total deadlines, close on the first excess byte). A vsock channel is not a network
 interface, so it does not give the Workstation a route (`inferred`: from vsock being a host-guest socket
 family; confirm the Whonix Workstation's firewall does not interfere). The guest service reuses the same
 worker logic as section 9.6 (same code, same sanitizer, but with no broker; see 11.5), but reaches Tor through the Gateway. The Gateway's address
@@ -1022,8 +1140,8 @@ Gateway's Tor proxy); whether that is possible and sound is `unverified` (open q
 What the Whonix tier still gives, and does not give:
 
 - **Gives:** the real network address stays out of reach of a hostile page and of a taken-over Workstation,
-  by Whonix's design (the project's claim, not tested here); the Workstation's own state is reset by the
-  snapshot revert; no open shell and a closed verb set on the host; hostile bytes are parsed away from the
+  by Whonix's design (the project's claim, not tested here); both VMs are stopped and reverted at session end
+  and on failures; no open shell and a closed verb set on the host; hostile bytes are parsed away from the
   host; a request log kept by the controller for every request it authorized.
 - **Does not give:** an enforced allowlist after Workstation compromise. Requests a compromised Workstation
   sends through the Gateway are not seen by the controller, not logged by it and not limited by it. Anyone
@@ -1033,27 +1151,59 @@ What the Whonix tier still gives, and does not give:
 Gateway. So a Workstation-originated attack on the Gateway could persist across sessions. Phase 1 handles
 this in two ways, and the persistence claim is narrowed to match:
 
-1. The wrapper also reverts the Gateway to its own clean snapshot (`kr-clean-gw`) at the start of each
-   session (the same lock, the same revert-and-ready sequence), and rebuilds both snapshots from the Whonix
+1. The wrapper reverts the Gateway to its own clean snapshot (`kr-clean-gw`) at the **end** of every session
+   and on every failure path (11.1), and again at the start, all under the same host lock, and rebuilds both snapshots from the Whonix
    project's published images on a schedule the maintainer sets (the images are `verified (read 2026-11-02)`
    to be the project's own qcow2 images per the Whonix KVM page). A Gateway revert discards Tor's cached
    state, so the first fetch after it is slower (`inferred`).
-2. The tier notes state that anything outside the two VMs' disks (the host, the hypervisor, libvirt) is
+2. Clean snapshots are bound to recorded measurements (11.6).
+3. The tier notes state that anything outside the two VMs' disks (the host, the hypervisor, libvirt) is
    not reset by this, and that the host is trusted (11.4).
+
+### 11.6 Pinning and measurements (Whonix tier)
+
+The same rule as 9.8: nothing executable is trusted by name, and startup is refused on a mismatch.
+
+- **Whonix images:** record, for each downloaded image, the project's published version, the SHA-256 of the
+  file and the verification of the project's signature over it (verifier and key identity recorded). The
+  digest-and-signature chain is stored in the repository's pin file and checked before import. How the Whonix
+  project signs its KVM images and what to verify is `unverified` (not read); the builder reads the Whonix
+  documentation first and records what was done.
+- **Clean snapshots bound to measurements:** at the time the maintainer creates each clean snapshot
+  (`kr-clean`, `kr-clean-gw`), the wrapper records the snapshot's identity, the SHA-256 of the base disk image
+  and of the domain XML (the XML defines devices and so is part of the boundary), and the guest service's
+  digest. Before each session the wrapper recomputes and compares them; a mismatch (a different base image, a
+  changed domain XML, a different snapshot) refuses to start.
+- **Guest service:** `kr-guest-fetch` is installed from a build whose digest is recorded; the wrapper reads
+  the running service's digest through the vsock hello before the first permit and refuses on mismatch. A
+  compromised guest could lie about this, which is why the check is a tripwire and not a boundary; the revert
+  to a measured snapshot is what resets it.
+- **Test:** substitute a different base image, a different domain XML, a different snapshot and a different
+  guest service digest, with libvirt stubbed; each refuses startup.
 
 ## 12. Discovery lane interface (reserved; implemented in Phase 2)
 
-Phase 2 is blocked by the safety gate (#4). This design only reserves the shape so Phase 1 does not need to
-change when it arrives.
+Phase 2 is blocked by the safety gate (#4). This design only reserves the contract so Phase 1 does not need
+to change when it arrives. The maintainer's approved record is exactly **liveness, title and category**.
 
 - **Request:** `discovery` exists and accepts only `false`. Anything else is `not_implemented`.
-- **Response:** `discovered` exists and is always `[]` (`maxItems: 0` in the schema; Phase 2 will raise the
-  limit and add the item schema).
-- **Intended shape (not built):** a discovered item is metadata only: `{network, status (up|down|unknown),
-  title (cut at 120 chars), category (maintainer-defined enum), source: {destination_id, path_sha256_12},
-  first_seen, last_seen, confidence}`. One hop from an allowlisted page. No body, image or file is stored.
-  Full-text fetch only after the maintainer promotes a destination into the allowlist file by hand. Caps,
-  abuse filter, stop-and-report rule and purge procedure are defined in #4 and are not designed here.
+- **Response:** `discovered` exists and is always `[]` (`maxItems: 0` in the schema).
+- **Reserved record (not built):** a closed object `{liveness (enum: up|down|unknown), title (string, cut at
+  120 characters, attacker-controlled and treated as such), category (enum defined by the maintainer in Phase
+  2)}`, `additionalProperties: false`. **Nothing else is reserved here.** Network, source, first and last
+  seen times, confidence and any other field belong to the Phase 2 database design (gate #4), not to this
+  contract, and a test rejects a record that carries any of them.
+- **One hop, defined.** A candidate may originate **only from a link found in the current response of an
+  allowlisted fetch** (a link that `links[]` reports as off-list for that response, 7.3). A candidate has no
+  other source: not another candidate, not a stored record, not a redirect target, not a model-supplied URL.
+- **Discovery records are never fetchable or expandable.** No verb accepts a discovery record or its address
+  as a fetch target, and no link found while recording a candidate creates another candidate. The only way a
+  destination becomes fetchable is the maintainer promoting it into the allowlist file by hand.
+- **Test (when built):** feed the lane a candidate whose only source is another candidate, and a link found
+  in a response that was itself produced by recording a candidate, and assert no record is created in either
+  case; feed a record with an extra field and assert it is rejected.
+- Full-text fetch, caps, abuse filter, stop-and-report rule and purge procedure are defined in #4 and are not
+  designed here.
 - **Phase 1 behavior that supports it:** `links[].target.offlist` already counts off-list links without
   keeping their addresses (7.3); Phase 2 decides whether to record them.
 
@@ -1070,6 +1220,11 @@ change when it arrives.
 | Concurrent sessions / fetches | container 2 / 1 per session; Whonix 1 / 1 | 4 / 1 | controller |
 | Session idle / lifetime | 300 s / 1800 s | 900 s / 3600 s | controller |
 | Fetcher memory, pids, cpu | 512m, 128, 1.0 | n/a | container runtime |
+| HTTP status line / header block / header count / one header | 256 B / 16 KiB / 64 / 4 KiB | same | `broker-front`, local gate |
+| Chunk-size line; chunk trailers | 32 B; rejected | same | `broker-front` |
+| Controller capability message / fetcher token message | 4 KiB / 128 B | same | `broker-egress`, `broker-front` |
+| Fetcher JSON reply / Whonix vsock reply | 256 KiB each | 1 MiB each | controller, wrapper (incremental, before parse) |
+| Read inactivity | 15 s | 30 s | every hostile boundary |
 | Log file | 10 MiB x 5 | n/a | controller |
 
 Caps lower only: a request or an allowlist entry can reduce them; nothing raises a hard max except a code
@@ -1093,7 +1248,7 @@ change.
 
 Order: (1) allowlist matcher and config loader; (2) response schema and controller second pass; (3)
 sanitizer; (4) request log and session table; (5) MCP server over a fake backend; (6) container tier
-(broker, fetcher, compose file, filtering); (7) Whonix wrapper; (8) Tor Browser driver, only after section 10's
+(`broker-egress`, `broker-front`, fetcher, compose file, filtering, pinning); (7) Whonix wrapper; (8) Tor Browser driver, only after section 10's
 conditions are met. A Daybreak-tier security review runs
 before anything is installed on a host (#1).
 
@@ -1125,6 +1280,9 @@ Tests are hermetic: no real Tor or I2P, no real proxy. A fake SOCKS5 and HTTP pr
 - **Topology and flows:** the static compose test and the hermetic port-enumeration and reachability tests of
   9.5; the broker tests of 9.5 (single use, expiry, no host or path from the fetcher, redirects not followed,
   gate limits, fail closed).
+- **Pinning:** the refusals of 9.8 and 11.6.
+- **Discovery contract:** the test of section 12 (a candidate sourced from another candidate creates nothing;
+  an extra field is rejected).
 - **Transport gate:** oversized, compressed-bomb and never-ending responses are cut at the limit at the broker
   (container) and at the local gate (browser tier, when built), and the browser process is killed.
 - **Address hygiene:** `scripts/check-addresses.sh` already runs in CI; no fixture contains a real address.

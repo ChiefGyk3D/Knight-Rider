@@ -18,7 +18,7 @@ Placeholders only: this repository has no real onion or I2P addresses.
 | | Tier 1: Tor Browser driven directly | Tier 2: container with Tor and i2pd | Tier 3: Whonix Gateway and Workstation |
 |---|---|---|---|
 | Status in Phase 1 | **Unavailable** until a verified fail-closed interceptor exists | Available (build first) | Available (build second) |
-| Isolation | Weakest. Trust boundary is the whole computer. | Middle. The fetcher cannot reach Tor or i2pd at all; a trusted broker fetches only what the controller authorized. | Strongest against address leaks. Workstation reaches only the Gateway. The allowlist does **not** survive a Workstation compromise. |
+| Isolation | Weakest. Trust boundary is the whole computer. | Middle. The fetcher cannot reach Tor or i2pd at all; a two-part broker fetches only what the controller authorized. | Strongest against address leaks. Workstation reaches only the Gateway. The allowlist does **not** survive a Workstation compromise. |
 | Tor onion services | Yes | Yes | Yes |
 | I2P eepsites | Not by itself. Needs a separate I2P router, otherwise Tor-only. | Yes, through i2pd | Not in Phase 1. Possible only as an experimental, community-supported I2P-over-Tor setup. |
 | Reads pages that need JavaScript | Only if JavaScript is turned on, which we do not do | No (no browser) | Not in Phase 1 (same fetcher as Tier 2) |
@@ -104,8 +104,8 @@ someone whose threat model includes a hostile page reaching their real address, 
 
 ## Tier 2: container with a Tor daemon and i2pd
 
-**What it is.** Four containers on three networks (`docs/design.md` section 9): a **fetcher** on an internal
-network with no route out, a trusted **request broker** between the fetcher and the proxies, and a **tor**
+**What it is.** Five containers on three networks (`docs/design.md` section 9): a **fetcher** on an internal
+network with no route out, a **two-part request broker** (a protocol stack and an egress gate) between the fetcher and the proxies, and a **tor**
 and an **i2pd** container that reach the internet through an egress network. The fetcher is an ordinary HTTP client, not a browser. It has a read-only
 root, no capabilities, resource limits, and no mount of your repos, secrets or tokens.
 
@@ -117,12 +117,18 @@ UDP SOCKS5 proxy option for SSU2; `inferred`: Tor provides no UDP SOCKS proxy, f
 
 **What it protects.**
 
-- **The allowlist survives a broken fetcher.** The fetcher parses hostile bytes, so it is treated as
-  breakable. It has no network path to Tor or i2pd. Everything it learns comes from a **broker** that accepts
-  one single-use capability from the controller and fetches exactly that scheme, host, port and path (one
-  canonical form used for both authorization and transmission), with compressed and decompressed byte limits and
-  a total deadline. A fetcher taken over by a page can ask the broker for the one page it was authorized to
-  fetch, once; it cannot ask for anything else (`docs/design.md` 9.2).
+- **The allowlist survives a broken fetcher and a broken protocol stack, but not a broken egress gate.**
+  The fetcher parses hostile bytes, so it is treated as breakable; it has no network path to Tor or i2pd.
+  Everything it learns comes through a two-part **broker**: `broker-front` handles TLS, HTTP headers and
+  decompression (it handles hostile bytes too, so it is also treated as breakable, and has no path to a
+  proxy), and `broker-egress` is a small gate that accepts one single-use capability from the controller and
+  connects only to that network, host and port, then relays bytes without parsing them (`docs/design.md`
+  section 9). One limit stays: for `https` entries the request path is built in `broker-front`, so a taken-over
+  protocol stack could ask for another path on the same authorized host (not another host).
+- Every hostile boundary has bounded, incremental framing (status and header bytes, header count, message
+  and reply sizes, deadlines), and the container egress policy is an exhaustive allow-only-global-unicast rule
+  for both address families that also blocks directly connected routes and infrastructure addresses
+  (`docs/design.md` 9.2 and 9.4), with a test per address class.
 - Tor and i2pd expose only one listener each to the broker, their peer transports are on the egress side only,
   and each container has its own filter for an exact set of flows, proved by tests that enumerate listening
   ports (`docs/design.md` 9.4 and 9.5).
@@ -146,14 +152,17 @@ UDP SOCKS5 proxy option for SSU2; `inferred`: Tor provides no UDP SOCKS proxy, f
   boundary is the container runtime and the kernel (`inferred` for the comparison of the two; the Docker
   and Podman security documentation was not read).
 - **Malware on the host** is not covered, as on every tier except those that run apart from the host.
-- **A bug in the broker.** It is small and does no HTML parsing, but it is trusted code. It is the component
-  that the security review of Phase 1 must read first.
+- **A bug in `broker-egress`, a proxy, or the host defeats the allowlist.** `broker-egress` is deliberately
+  tiny (a fixed SOCKS exchange and a byte relay, no TLS, no HTTP, no decompression) and is the component the
+  Phase 1 security review must read first. Tor and i2pd are treated as untrusted network software.
+- **A bug in `broker-front`** can alter the bytes the fetcher sees, which is why the fetcher's output stays
+  untrusted, and (https only) can change the path.
 - **A bug in the image or the proxy software** (Tor, i2pd, the fetcher). They are pinned by digest, which
   stops silent changes and does not make them bug-free.
 - Pages that need JavaScript return little or nothing.
 
 **Cost.** Medium: a container runtime (Docker or Podman, open question 1 in the design), a Compose file from
-this repository, four pinned images, and host firewall rules for the egress network (`inferred`; install
+this repository, five images pinned by digest with hash-locked dependencies (startup refuses a mismatch), and host firewall rules for the egress network (`inferred`; install
 and test them on a plan, not on a live firewall). No extra hardware. First I2P fetch may be slow while the
 router builds tunnels (the design measures this in the first approved run).
 
@@ -196,8 +205,11 @@ page does inside the VMs does not persist, and the no-open-shell control wrapper
   project's claim, untested), a Workstation reset to a clean snapshot, a closed verb set with no shell, and
   parsing away from your host. If you want the allowlist enforced against a taken-over fetcher, pick Tier 2.
 - **The Gateway is reverted too, but the host is not.** The Workstation revert does not reset the Gateway, and
-  the Workstation can reach it. So the control wrapper also reverts the Gateway to its own clean snapshot at the
-  start of each session and the images are rebuilt from the Whonix project's on a schedule. Anything outside
+  the Workstation can reach it. So the control wrapper stops and reverts **both** VMs at the end of every
+  session and on every failure path, before it lets go of its lock, and marks both dirty if it crashes (they are
+  contained before it serves anything again). The images are rebuilt from the Whonix project's on a schedule,
+  and the clean snapshots are bound to recorded measurements; a mismatch refuses to start (`docs/design.md`
+  11.1 and 11.6). Anything outside
   the two VMs' disks (host, hypervisor, libvirt) is not reset by this.
 - **The host.** Whonix's Warning page, per the wiki: the platform's security "is itself reliant upon the
   security of the host"; a compromised host compromises every Whonix VM; virtualization "cannot absolutely
