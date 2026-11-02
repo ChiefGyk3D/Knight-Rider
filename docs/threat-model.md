@@ -100,7 +100,7 @@ fetch profile per network, not one browser for both.
 | A-1 | The maintainer's real network location and identity | Personal, sensitive | Anonymity is the point of the networks; losing it costs safety and legal footing. |
 | A-2 | The host and everything the maintainer's account can reach: repositories, tokens, the Claude login, other credentials | Credentials | A sandbox escape converts a page visit into account compromise. |
 | A-3 | The consuming AI session and its tool access | Integrity | Hostile page text aims at it; whatever tools it holds, an injected instruction can try to use. |
-| A-4 | The allowlist (private) | Private, sensitive | Its contents reveal what the maintainer researches; its integrity decides what the tool may touch. |
+| A-4 | The allowlist (private), including every synced copy | Private, sensitive | Its contents reveal what the maintainer researches; its integrity decides what the tool may touch. |
 | A-5 | The request log | Private, sensitive | A record of destinations and times. A target for theft, and for accidental publication. |
 | A-6 | Discovery metadata (Phase 2): titles, liveness and categories of leads, keyed by the lead's canonical destination | Private, sensitive; possibly legally sensitive | Identifiers of services are the content of the database. |
 | A-7 | Integrity of what the tool reports | Integrity | OSINT conclusions rest on it. |
@@ -123,7 +123,7 @@ fetch profile per network, not one browser for both.
 
 ## Trust boundaries
 
-Nine boundaries, drawn separately in the Threat Dragon file. In T2 and T3 each is a real wall. In T1 the browser, the
+Ten boundaries, drawn separately in the Threat Dragon file. In T2 and T3 each is a real wall. In T1 the browser, the
 control wrapper and the host share one operating-system user, so TB4, TB5 and TB7 collapse into the account boundary (a
 dedicated account is the mitigation, K02a).
 
@@ -136,7 +136,8 @@ dedicated account is the mitigation, K02a).
 | TB5 | The sandbox guest, and the network daemon or Gateway | Proxied requests and responses |
 | TB6 | The daemon or Gateway, and the anonymity networks and services | Tor or I2P traffic; hostile page bytes |
 | TB7 | The sandbox guest, and its host and hypervisor | Everything the isolation is supposed to stop |
-| TB8 | The private machine, and the public repository, issues and any sync | Files, text, logs |
+| TB8 | The private machine, and the public repository and issues | Files, text, logs |
+| TB10 | The private synced configuration store, and every machine holding a copy of the allowlist | The allowlist file itself, deliberately; copies, history and recovery copies (K18) |
 | TB9 | Upstream artifacts, and the sandbox images and the host | Binaries, images, packages |
 
 The highest-value crossing is TB6 to TB4 to TB1 in series: page bytes travel from an adversary, through the sandbox and
@@ -158,23 +159,24 @@ does not exist yet (the repository today contains only the address check).
 | 4 | K02c | T3: Workstation, Gateway and hypervisor crossings | Critical | Browser exploit, then a VM-boundary or Gateway flaw | Generated domain definitions, host-observed effective inventory, host choice (K10) | planned |
 | 5 | K03 | Real IP or identity leak | High | A page that triggers a request, a client bug or a wiring mistake | Tier-specific network invariants observed at the enforcement point | planned |
 | 6 | K07 | Log and stored data leave the machine: backup, sync, commit, the AI transcript | High | A sync or backup job, a mistaken commit, or text that induces an injected AI to ask for the log | No AI-facing log verb, resolved paths checked, exclusions, exact schema, retention | planned |
-| 7 | K04 | Allowlist matching bypass, redirect, unbrokered page-initiated requests, or widening by persuasion | High | A parser difference, a redirect, an allowlisted page, or a plausible message | Canonical match, every request class brokered before dispatch, human-only promotion | planned |
-| 8 | K17 | Public repository leakage: addresses, allowlist content, unfixed detail | High | A contributor or agent mistake | Address check in CI, private tracker, placeholders only | **exists** |
-| 9 | K05 | Abusive content met, stored or transcribed | High | Fetching a page; no attacker needed | Text-only, nothing persisted; stop-and-report is gate #4 | gate #4 pending |
-| 10 | K06 | Tool abuse: control-channel verbs turned into a shell | High | Influence over tool arguments (an injected AI) | Fixed verbs, argument vectors, schema validation | planned |
-| 11 | K09 | Supply chain: browser, daemons, images, dependencies | High | A compromised or neglected upstream | Parse-and-fail pinning policy, separate provenance check | planned |
-| 12 | K10 | The Whonix host question | High | A VM escape, or credentials left on the shared host | Dedicated host or hypervisor, least-privilege libvirt user | maintainer decision |
-| 13 | K08 | Discovery lane: fan-out past one hop, and second-order injection | High | A page with a lead, a later read of the store | Declared persisted representation, one-hop rule, escaped reads | planned |
-| 14 | K04b | Allowlist file substitution and same-user tampering | High | Same-user code execution (K02a gives it) | Constrained symlink-free resolution, descriptor read; same-user tampering accepted | planned; residual accepted |
-| 15 | K12 | Ephemerality fails: state survives a run or links runs | Medium | A prior hostile page or a failed cleanup | One fetch per instance, host-controlled evidence only, poisoned on any failure | planned |
-| 16 | K11 | Hostile bytes parsed in the core, and the sandbox-to-host result channel | Medium | A page, or a compromised sandbox | Length-prefixed closed-schema frame, fail closed, no page bytes on error | planned |
-| 17 | K16 | Intelligence integrity: lures, cloaked or poisoned pages | Medium | An operator who wants to mislead | Provenance in every result, no automated action | planned |
-| 18 | K07b | Log and stored data read by a local same-user process | Medium | Same-user code execution | Modes, no bodies, retention; partly accepted | planned |
-| 19 | K13 | The tool is distinguishable or can be cloaked against | Medium | An operator who profiles visitors | Stock configuration, request discipline; accepted in part | inferred; manual |
-| 20 | K14 | Network adversary: correlation, malicious relays, honeypots | Medium | Position at both ends or a controlled relay | Client-only, few small requests; accepted | not testable here |
-| 21 | K15 | Resource exhaustion by a page or server | Low | A page or a slow server | Streaming byte cap, wall-clock cap, redirect cap | planned |
+| 7 | K18 | The private allowlist leaves the machine through its own sync | High | Compromise or misconfiguration of the sync channel or any copy, or a step that prints the file | Defined location and readers per copy, private minimal-scope store, no contents in outputs, readiness check | planned |
+| 8 | K04 | Allowlist matching bypass, redirect, unbrokered page-initiated requests, or widening by persuasion | High | A parser difference, a redirect, an allowlisted page, or a plausible message | Canonical match, every request class brokered before dispatch, human-only promotion | planned |
+| 9 | K17 | Public repository leakage: addresses, allowlist content, unfixed detail | High | A contributor or agent mistake | Address check in CI, private tracker, placeholders only | **exists** |
+| 10 | K05 | Abusive content met, stored or transcribed | High | Fetching a page; no attacker needed | Text-only, nothing persisted; stop-and-report is gate #4 | gate #4 pending |
+| 11 | K06 | Tool abuse: control-channel verbs turned into a shell | High | Influence over tool arguments (an injected AI) | Fixed verbs, argument vectors, schema validation | planned |
+| 12 | K09 | Supply chain: browser, daemons, images, dependencies | High | A compromised or neglected upstream | Parse-and-fail pinning policy, separate provenance check | planned |
+| 13 | K10 | The Whonix host question | High | A VM escape, or credentials left on the shared host | Dedicated host or hypervisor, least-privilege libvirt user | maintainer decision |
+| 14 | K08 | Discovery lane: fan-out past one hop, and second-order injection | High | A page with a lead, a later read of the store | Declared persisted representation, one-hop rule, escaped reads | planned |
+| 15 | K04b | Allowlist file substitution and same-user tampering | High | Same-user code execution (K02a gives it) | Constrained symlink-free resolution, descriptor read; same-user tampering accepted | planned; residual accepted |
+| 16 | K12 | Ephemerality fails: state survives a run or links runs | Medium | A prior hostile page or a failed cleanup | One network transaction (fetch or probe) per instance, host-controlled evidence only, poisoned on any failure | planned |
+| 17 | K11 | Hostile bytes parsed in the core, and the sandbox-to-host result channel | Medium | A page, or a compromised sandbox | Length-prefixed closed-schema frame, fail closed, no page bytes on error | planned |
+| 18 | K16 | Intelligence integrity: lures, cloaked or poisoned pages | Medium | An operator who wants to mislead | Provenance in every result, no automated action | planned |
+| 19 | K07b | Log and stored data read by a local same-user process | Medium | Same-user code execution | Modes, no bodies, retention; partly accepted | planned |
+| 20 | K13 | The tool is distinguishable or can be cloaked against | Medium | An operator who profiles visitors | Stock configuration, request discipline; accepted in part | inferred; manual |
+| 21 | K14 | Network adversary: correlation, malicious relays, honeypots | Medium | Position at both ends or a controlled relay | Client-only, few small requests; accepted | not testable here |
+| 22 | K15 | Resource exhaustion by a page or server | Low | A page or a slow server | Streaming byte cap, wall-clock cap, redirect cap | planned |
 
-Counts: 21 risks, 21 mitigations, 21 verifications (sections below).
+Counts: 22 risks, 22 mitigations, 22 verifications (sections below).
 
 ## Findings that shape the design
 
@@ -546,6 +548,9 @@ the file the maintainer meant.
     sidecar or journal file beyond the storage engine's own, and no discovery fields in the request log beyond the K07
     log schema. The binding of a candidate to its parent fetch lives only in controller memory for the run and is never
     persisted.
+  - **Probe isolation.** Every probe runs in its own fresh sandbox instance (K12: one network transaction per
+    instance). Sibling candidates never share an instance, and no state carries from one probe to the next except the
+    host-held, run-bound capabilities. A probe whose instance cannot be verified clean is refused, not run.
   - **One hop.** The only input to discovery is a link extracted, in the current run, from a fetch of a destination that
     matched the allowlist. A stored discovery record is never an eligible input: the discovery function accepts a parent
     only if it is allowlist-matched, and a record carries no state that makes it a seed. A probe runs only under the single-use,
@@ -554,7 +559,7 @@ the file the maintainer meant.
   - **Second order.** Fields are normalized, length-capped and stripped of control characters at write time; the log
     format escapes newlines and delimiters; every read path that returns stored strings to the AI uses the K01 envelope
     and says the fields are untrusted; counts and categories are computed by code [I].
-- **Verification.** Planned tests, with the network stubbed: (0) a **full-store dump test**: dump the entire backing store (schema introspection including every table, column and index, every file in the state directory, the engine's journal and write-ahead files, and the log) and compare it with the declared representation above; any undeclared column, key, index, auxiliary record, file or seed state fails. (1) a **graph fixture**: allowlisted page A links to B, and
+- **Verification.** Planned tests, with the network stubbed: (00) a **sibling-candidate test**: A yields B and D; B plants state or poisons the result channel; D must run in a distinct verified-clean instance (or be refused) and see none of B's state; the same test is mirrored in K12. (0) a **full-store dump test**: dump the entire backing store (schema introspection including every table, column and index, every file in the state directory, the engine's journal and write-ahead files, and the log) and compare it with the declared representation above; any undeclared column, key, index, auxiliary record, file or seed state fails. (1) a **graph fixture**: allowlisted page A links to B, and
   B links to C. The test asserts exactly one request to B, zero requests to C, and no record for C. (2) A schema test:
   a stored record has exactly the three fields; an extra field fails. (3) A test that a stored record cannot be passed
   to the discovery entry point. (4) A title containing a newline, a fake log line, a fake envelope and control characters
@@ -703,8 +708,11 @@ the file the maintainer meant.
 - **Impact.** Medium: it ties visits together and lets an earlier breach persist.
 - **Prerequisites.** A prior hostile page, or a cleanup error, or a compromised guest.
 - **Mitigation.**
-  - **Lifecycle.** The unit is **one fetch per sandbox instance** (a session of several fetches is a different, named
-    mode and is not modeled). Create or revert from the recorded clean image; the host verifies it; exactly one fetch
+  - **Lifecycle.** The unit is **one network transaction per sandbox instance**: exactly one `fetch` **or** exactly one `probe`,
+    never several (a multi-transaction session is a different, named mode, with weaker isolation, and is not
+    modeled). Each probe of a discovery operation gets its own fresh or reverted, host-verified instance; the run-bound
+    probe capabilities (K04) are held only in host-controlled memory across those instances. Create or revert from the
+    recorded clean image; the host verifies it; exactly one transaction
     runs; teardown; the instance is destroyed or reverted. A failure at any transition, or any error from the result
     channel (K11), leaves the instance **poisoned**: no fetch runs on it, and only a verified new instance clears the
     state. "Run," "fetch" and "session" in this model mean this one unit.
@@ -722,7 +730,10 @@ the file the maintainer meant.
     - Network-isolation token: set and held by the host-side proxy or Gateway configuration (host-controlled).
   - Cleanup after the fetch is defense in depth. Known I2P linkability in the Whonix path (no stream isolation [V]) is
     outside the guarantee.
-- **Verification.** Planned tests against the **real backend** for T2 and T3 (stubs alone are insufficient here):
+- **Verification.** Planned **sibling-candidate test**: an allowlisted page yields candidates B and D; the probe of B plants
+  state (a profile change, cache entry, background process, writable file) or poisons the result channel; the probe of D
+  must run in a distinct, verified-clean instance, or be refused until one exists, and must observe none of B's state.
+  Planned tests against the **real backend** for T2 and T3 (stubs alone are insufficient here):
   state planted outside any inventory the guest reports (on a second writable volume, in a daemon directory, in the
   guest's disk, in a background process) must make the host-side check fail and the next fetch refused; a failure
   injected at every lifecycle transition (create, verify, fetch, teardown, revert) must leave the instance poisoned and
@@ -795,6 +806,51 @@ the file the maintainer meant.
 - **Residual.** The check finds address-shaped strings, not an allowlist described in words or a log excerpt without an
   address. Review stays human.
 
+### K18. The private allowlist leaves the machine through its own sync
+
+- **Abuse case.** The allowlist is deliberately kept in a private synced configuration store, so that the same file
+  reaches the other machines that run the tool, including a remote box. That intended crossing (TB10) is itself a
+  disclosure path. The sync account or its remote copy is compromised; sharing or visibility is misconfigured (the store
+  is made public, a collaborator or token is added, a copy is shared by mistake); older copies persist in history,
+  backups, recovery copies, caches or other machines' checkouts; the remote box's copy is readable by another account or
+  swept into that box's own backups; or an entry reaches a log, pull request, issue, agent transcript or error message
+  because something printed it. The allowlist reveals substantially the same research targets as the request log (A-4,
+  A-5).
+- **Impact.** High: the same as K07, and a copy that has left cannot be recalled.
+- **Prerequisites.** Compromise or misconfiguration of the sync channel or of any one copy; or, for the paste route, an
+  agent or script that prints the file. The first needs a credential or a mistake; the second needs only a careless
+  step, which is why it is ranked with K07.
+- **Mitigation.** (Everything here is [I] except where a project statement is cited; the maintainer's synced store and
+  machines are described only in generic terms.)
+  - **Where the file lives.** One canonical private path, outside every checkout of this repository and outside the
+    tool's state directory. The repository carries only the placeholder example (D3).
+  - **What syncs it.** Only the private synced configuration store, which must be private, access-limited, protected by
+    strong authentication, and shared with the minimum set of accounts and machines. Nothing else (no second backup
+    tool, no cloud folder, no shared drive) covers the path. Optionally the file is encrypted before it enters the
+    store, with the key held outside the store, so a copy of the store alone does not disclose it.
+  - **Who can read each copy.** Each machine's copy is mode 0600 in a 0700 directory, owned by the account that runs the
+    tool and no other. On the remote box, the read path is that account only; the box's own backups either exclude the
+    path or are private and encrypted; the box has no other user with access to that account's files.
+  - **No contents elsewhere.** The tool never prints an allowlist entry in a log, error, status or result (the log
+    carries only the allowlist digest, K07); denials name no entry; agents are told to use the digest and never to read,
+    quote or paste the file; no pull request, issue, commit message or test fixture contains a real entry (K17).
+  - **Trusted and accepted.** The sync provider and the security of the maintainer's account with it are trusted;
+    history and recovery copies that already exist are treated as permanent, so the remedy for a suspected disclosure is
+    to retire the affected entries, not to expect deletion.
+- **Verification.** Planned: (1) an **operational readiness check**, run by the maintainer before the tool is enabled
+  on a machine and after any change to sync configuration, that inventories the effective remote destinations and the
+  sharing state of the configured sync mechanism (visibility, collaborators, tokens, machines) read-only, compares them
+  with a recorded **approved private scope**, and **fails** if the allowlist is synced anywhere outside it. (2) On each
+  machine: the mode and owner of the file and directory (`stat -c '%a %U'` shows 600 and 700 for the account that runs
+  the tool) and the list of other backup or sync tools that cover the path (expected: none). (3) A **sentinel test**:
+  the test allowlist contains a distinctive placeholder entry; the test runs every verb, error path and failure mode and
+  searches every output, log, status response and test artifact for the sentinel; any hit fails. (4) A check on the
+  repository that no tracked file or fixture holds a real entry (the address check is a K17 control and does not cover
+  this).
+- **Residual.** Trust in the sync provider and the maintainer's account; copies in history and recovery that already
+  exist; physical access to any machine holding a copy. Reopen on any change to the sync mechanism or the set of
+  machines, and on any suspected exposure of the store.
+
 ## Guarantees and non-guarantees
 
 What this design, once built as modeled, would aim to give: a destination not on the allowlist is not fetched (K04);
@@ -811,6 +867,7 @@ consumer's transcript (F5).
 |---|---|---|
 | Plain-language injection passes any sanitizer (K01) | The maintainer, with consumer-side separation | The consumer gains write tools in the reading session |
 | T1 shares the account (K02a) | The maintainer, already decided as weakest [D] | T1 is used on an account with credentials |
+| Trust in the private synced configuration store and the maintainer's account with it; existing history and recovery copies (K18) | The maintainer | The sync mechanism or the set of machines changes, or the store is suspected exposed |
 | Same-user tampering with the allowlist, log and configuration (K04b, K07b); no outside-authority anchor is specified | The maintainer | An anchor outside the user's authority is specified, or an agent with shell runs as the same user |
 | Direct I2P peer visibility of the host's address when i2pd runs on the host or in T2 (K03) | The maintainer | The design chooses I2P through Tor, or the host is shared |
 | Host shared with the Claude login (K10) | The maintainer | The always-on box takes the Whonix role |
