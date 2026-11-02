@@ -373,7 +373,7 @@ allowlist file. Open question 8 asks whether Claude ever needs the host.
          fetcher (sandbox) <-- broker-front (parses) <-- broker-egress (gate) --> Tor / i2pd --> network
 ```
 
-- **Controller** (`knight_rider.controller`): the only process with the allowlist. Implements the four verbs,
+- **Controller** (`knight_rider.controller`): the only process with the allowlist. Implements the three verbs,
   validates requests against the schemas, builds the **permit**, calls a backend, validates the backend's
   reply, writes the log, and wraps the envelope. It has no network access of its own. Language: Python 3.11+
   (the maintainer's other repos use it and GYST `python-ci` fits); the standard library plus a small pinned set
@@ -1259,7 +1259,7 @@ KVM page "is only supported by the community".
   forwarding, pty and agent forwarding in one switch (`inferred`: from OpenSSH `authorized_keys` behavior; read
   `sshd(8)` before implementing). The controller speaks the same line-delimited JSON over that channel. libvirt's
   own remote transport is not used, because a libvirt connection exposes every domain on the host.
-- The wrapper accepts only JSON of the four verbs with schema-checked fields, and ignores everything else.
+- The wrapper accepts only JSON of the five wrapper verbs with schema-checked fields, and ignores everything else.
   Arguments are never passed to a shell; `virsh` is invoked with an argument list (or the libvirt API is
   called directly), with domain names taken from config and never from the request.
 - No credentials for the controller to the host beyond that one key; nothing from the repo, the secrets
