@@ -195,7 +195,10 @@ the guest a path into whatever the host later listens on). The channel is a poin
 is one socket in a directory the wrapper owns, so the guest has no host service namespace to reach. **That
 property is unverified**: it is not established by the documentation I read, so **this tier is disabled by
 default and stays unavailable until tests on your own host show the guest has exactly the declared channel and
-no other host-reachable path** (`docs/design.md` 11.2). If they cannot pass, the tier is not offered.
+no other host-reachable path** (`docs/design.md` 11.2). The channel's socket directory needs a dedicated group
+(or a narrow ACL) shared by the wrapper and the VM's user, and the exact permissions are unverified on your host.
+Until then the status call lists this tier as unavailable and not ready, and a fetch that selects it returns
+`tier_unavailable`. If they cannot pass, the tier is not offered.
 
 **Networks.** Tor onion services: yes. I2P: **not in Phase 1.** `verified (read 2026-11-02)`, Whonix wiki,
 I2P page: Whonix does not install I2P; the preferred way is to run the I2P router inside the Workstation and

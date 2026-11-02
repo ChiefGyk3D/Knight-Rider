@@ -290,6 +290,11 @@ free-form string from a file or a page. If the maintainer wants notes shown, tha
 `provenance: {fetched_at}`, `data: {"tiers": [{"tier": enum, "available": boolean, "networks": enum array,
 "ready": boolean, "transactions_active": count}], "caps": caps}`, `error`. The `container`, `whonix` and
 `tor-browser` entries report availability honestly; `tor-browser` is always `available: false` in Phase 1.
+`kr_status` **always returns an entry for every tier**, with `available: false` and `ready: false` for one that is
+unavailable (Whonix until verified, Tor Browser always); it never fails because a tier is unavailable.
+`tier_unavailable` is an error code reserved for a `kr_fetch` that selects an unavailable tier. **Test:** with the
+Whonix and Tor Browser tiers unavailable, `kr_status` succeeds, shows the container tier's real state, and
+shows both others as `available: false, ready: false`.
 
 **Success invariants, enforced twice.** The success variant admits only a real success: `ok` is the constant
 `true`, `content` is a required object (never null), `error` is the constant `null`, `status_code` is a 2xx
@@ -1144,8 +1149,8 @@ controller or the stack's init step checks; a mismatch is `tier_unavailable`, ne
 
 ## 10. Tor Browser tier (build last): unavailable until the interceptor is verified
 
-**Status: this tier is UNAVAILABLE in Phase 1.** It ships disabled and `kr_status` reports
-`tier_unavailable` for it. It becomes available only when all three of the following have been built and
+**Status: this tier is UNAVAILABLE in Phase 1.** It ships disabled and `kr_status` lists it with
+`available: false` and `ready: false` (a `kr_fetch` that selects it returns `tier_unavailable`). It becomes available only when all three of the following have been built and
 verified by tests at the proxy boundary, not through what the browser shows:
 
 1. A **pinned browser**: an exact Tor Browser version and exact driver versions, recorded in the repository,
@@ -1314,7 +1319,7 @@ host and the guest"; for `<target type='virtio' name='...'/>` the channel "is ex
 `<channel type='unix'><source mode='bind' path='...'/>` the host end is a Unix socket at a path; the `state`
 attribute (`connected` or `disconnected`) is output-only; the page is undated. The design uses exactly one such
 channel per VM: `<channel type='unix'>` with a `source mode='bind'` path inside a **per-VM directory created
-and owned by the wrapper** (mode 0700, readable only by the wrapper's identity and the identity QEMU runs as),
+and owned by the wrapper** under the permission model below,
 and a `target type='virtio'` with a fixed name. The wrapper connects out to that socket; it creates no
 listening socket and no other service on the host for the guest. The guest's only reachable host endpoint is
 that one device, a point-to-point byte stream whose host end is that one socket. There is **no host service
@@ -1323,13 +1328,47 @@ permit and reads one JSON reply under the framing discipline of 9.2 (a frame of 
 length prefix, incremental bounded decoding, read and total deadlines, close on the first excess byte). The
 channel carries no IP route; the Workstation's only network path remains the Gateway.
 
+**Permission model for the channel directory (one exact model, UNVERIFIED against the target host).** The
+wrapper and the identity QEMU runs as (for system libvirt, the distribution's QEMU user, set by libvirt's
+configuration) are different identities, so plain `0700` cannot give both access. The model uses a dedicated
+group:
+
+- A group `kr-chan` is created by the install step. Members: the wrapper's identity and the QEMU identity, no
+  others.
+- The parent directory (`<state>/kr-whonix/chan/`) is created by the wrapper: owner = wrapper identity, group =
+  `kr-chan`, mode `0710` (owner full; group search only; no access for others). Group members can traverse but
+  not list or create in the parent.
+- Each per-VM directory (`.../chan/<domain>/`) is created by the wrapper before the domain starts: owner = wrapper
+  identity, group = `kr-chan`, mode `0770` (the wrapper sets the group explicitly and does not rely on setgid), so the group (QEMU) can search and **create** entries and the wrapper can search, create and
+  remove. Nothing else is in the directory.
+- The socket is **created by QEMU** (bind mode), as the QEMU identity, in the per-VM directory, with socket
+  mode 0660 and group `kr-chan` (the wrapper confirms group and mode after start and refuses on a difference).
+  The wrapper **connects** (needs search on both directories and write on the socket, which group membership
+  gives). Nobody else has any of search, write or connect.
+- Before each start the wrapper removes any stale entry in the per-VM directory, and after teardown removes the
+  socket; a directory containing anything but the declared socket name is a failure.
+- A narrowly scoped POSIX ACL granting only QEMU's identity the same rights on the two directories is an
+  equivalent alternative if a dedicated group is not wanted; the builder picks one and records it. Which model
+  the selected distribution's libvirt confinement (for example an AppArmor or SELinux profile restricting where
+  QEMU may create sockets) allows is `unverified`, and the model may need a profile adjustment that the
+  maintainer approves.
+
+**Acceptance test using the actually configured identities (on a disposable host, with the maintainer's go):**
+start the domain and assert (a) QEMU created exactly the declared socket and could create nothing else in the
+directory (an attempt as the QEMU identity to create a second entry under another name is allowed by mode but
+the wrapper's post-start check fails on any extra entry; an attempt in the parent fails); (b) the wrapper
+connects and completes one framed exchange; (c) an unrelated identity can neither traverse the parent, nor
+replace or remove the socket, nor connect to it; (d) modes, owners and groups match this model exactly, and
+the check fails if a member outside `kr-chan` appears.
+
 **Status: UNVERIFIED.** That a virtio-serial channel gives the guest no other host-reachable path, and that
 nothing else in the QEMU configuration Whonix ships adds one, is **not established by documentation I read**.
 The libvirt page says only "private communication channel"; the Whonix KVM page (read 2026-11-02, first
 100,000 characters only) has no section on channels, guest agents or vsock that I could read, and I did not
 read the QEMU documentation on virtio-serial or its security notes. Until it is verified on the selected KVM
 and libvirt host by the tests below, **the Whonix tier is not enableable and stays disabled by default**; the
-install guide ships it off, and `kr_status` reports `tier_unavailable` for it. If the tests cannot be made to
+install guide ships it off, and `kr_status` reports its entry with `available: false` and `ready: false`
+(`tier_unavailable` is the error of a `kr_fetch` that selects it). If the tests cannot be made to
 pass, the Whonix tier is not offered at all until a verified mechanism exists.
 
 **Tests (replace the earlier vsock enumeration and canary tests):**
