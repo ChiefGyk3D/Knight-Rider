@@ -361,8 +361,8 @@ destinations:
     host: placeholder.onion  # exact host, lowercase, no wildcard, no port
     schemes: [http]          # subset of [http, https]
     port: 80                 # optional, default 80/443 by scheme
-    path_prefixes: ["/"]     # optional; request path must start with one
-    allow_query: false       # optional; default false: queries are refused
+    path_prefixes: ["/"]     # optional, http entries only; see the https rule below
+    allow_query: false       # optional, http entries only; default false: queries are refused
     tags: [example]
     label: example-tor
     note: placeholder entry for a Tor onion service
@@ -408,7 +408,8 @@ transmitted request line (section 15).
    e. Collapse nothing else: repeated slashes (`//`) are kept as written and compared as written.
    f. The canonical path is **re-encoded once** to a fixed form (uppercase hex, unreserved characters left
       literal). That string is the one stored and transmitted.
-   g. **Match is exact equality or a slash-delimited prefix.** An entry's `path_prefixes` item `P` (must start
+   g. **Match is exact equality or a slash-delimited prefix** (`http` entries only; an `https` entry is
+      host-scoped and carries no `path_prefixes`, see 9.2). An entry's `path_prefixes` item `P` (must start
       and end with `/`, or be an exact path) matches path `X` if `X == P`, or `P` ends with `/` and `X` starts
       with `P`. A sibling that only shares leading characters (for example `/docs-old` against `/docs/`) does not
       match.
@@ -475,7 +476,27 @@ cut cannot split a sequence the rules would have removed.
 6. **Hidden text.** Drop any element with the `hidden` attribute, `aria-hidden="true"`, `type="hidden"`, or an
    inline `style` that sets `display:none`, `visibility:hidden`, `opacity:0`, `font-size:0`, a negative
    `text-indent` or position larger than 1000px off-screen, `height:0` or `width:0` with `overflow:hidden`, or
-   `clip`/`clip-path` that hides it. **Limit, stated plainly:** stylesheets and classes are not fetched or
+   `clip`/`clip-path` that hides it, **evaluated by the rules below, not by substring or regular-expression
+   matching.**
+   **Inline style parsing requirement.** Each `style` attribute is parsed with a bounded CSS declaration
+   parser (a pinned library or a small hand-written tokenizer; input at most 4 KiB, at most 64 declarations)
+   that: removes comments; decodes CSS escapes (a backslash followed by hex digits and one optional space, or a
+   backslash followed by any other character) in names and values; folds property names and keywords to lower
+   case; normalizes whitespace (including newlines and form feeds) around names, colons, values and
+   semicolons; strips a trailing `!important` (with any case, spacing or comment between `!` and `important`),
+   treating an important declaration as winning over a non-important one for the same property and, between
+   equals, the last one winning; handles numeric values with any units (`px`, `em`, `rem`, `pt`, `%`, `vw`,
+   `vh` and unit-less zero), signs, exponents and leading or trailing zeros (so `0`, `0.0`, `-0`, `0px`,
+   `0e0em`, `+0%` are all zero); accepts `opacity` as number or percentage; and expands the shorthands
+   `font` (size), `margin`/`padding` (not evaluated), and `inset` (off-screen position). The result is a
+   final value per property in the supported subset, and the element is dropped if any matches the list above.
+   **Fail closed:** if a `style` attribute cannot be parsed to completion (unbalanced quote or parenthesis,
+   an unknown at-rule or function in a supported property's value, a limit exceeded, a NUL), the **entire
+   element and its subtree are dropped** and counted in `removed.hidden`. Dropping the element is always the
+   safe direction. **Tests:** a fixture for every supported hiding property in each equivalent form (mixed
+   case, escapes, inserted comments, extra whitespace, `!important` variants, competing duplicates in both
+   orders, each unit and zero form) must give identical removal and a non-zero `removed.hidden`; a visible
+   control fixture is kept; an unparsable fixture is dropped. **Limit, stated plainly:** stylesheets and classes are not fetched or
    evaluated, so text hidden by a stylesheet appears in the output. The sanitizer cannot know what a human
    would see; this is why the output is untrusted even after sanitizing.
 7. **Attributes are never emitted.** `alt`, `title`, `aria-label`, `data-*`, `placeholder` and `value` are not
@@ -535,15 +556,34 @@ One JSON object per line (`jsonl`), appended by the controller to `KNIGHT_RIDER_
 (10 MiB, keep 5).
 
 Fields: `ts`, `request_id`, `session_id`, `verb`, `tier`, `network`, `destination_id` (or null when denied),
-`host_sha256_12` (so a denied or unknown host can be correlated without storing it), `path_sha256_12`,
+`host_hmac` (so a denied or unknown host can be correlated within this installation without storing it), `path_hmac`,
 `decision` (`allowed`, `denied`), `reason` (the error code), `status_code`, `content_type`, `raw_bytes`,
-`raw_sha256`, `returned_chars`, `truncated`, `redirect_count`, `duration_ms`, `sanitizer_version`,
+`raw_hmac`, `returned_chars`, `truncated`, `redirect_count`, `duration_ms`, `sanitizer_version`,
 `removed` (the counts), `second_pass_changes`, `caps` (effective).
 
 Never logged: page bodies or text, titles, link labels, headers other than the media type, query strings,
-cookies, the allowlist contents, or full addresses (a `log_full_host: true` config switch exists for the
-maintainer's own audit and is off by default). A log line is written for every request including denials,
+cookies, the allowlist contents, or full addresses. A log line is written for every request including denials,
 before the backend is called, and a second line for the outcome.
+
+**Keyed hashes, not bare hashes.** A bare truncated hash lets anyone who gets the log test a list of guessed
+destinations offline (the candidate set is often small), and mode 0600 does not stop another process running as
+the controller's user. So every hashed field (`host_hmac`, `path_hmac`, `raw_hmac`) is an **HMAC-SHA-256 under a
+random 32-byte log key**, output at full length (64 hex characters; no truncation). The key is generated on first
+start from the operating system's random source, stored in a separate file outside the repository
+(`$XDG_STATE_HOME/knight-rider/log.key`, mode 0600, directory 0700), never written to the log, never returned
+by any verb, never put in the environment of a sandbox, and never shown in a diagnostic. The key is **rotated
+with each log set** (when the log file rotates), so correlation of one destination across rotated logs is not
+possible and a stolen old log does not match a candidate against a newer key; the old key is deleted with its
+log. A reader of the log alone, or of the log plus a guessed candidate list, cannot confirm any candidate.
+**Test:** hash a known candidate host with the same function without the key (and with a wrong key) and assert
+the result does not appear in the log; assert the key never appears in a log line, a response or a process
+environment passed to a container; assert a rotated log's hashes do not match the new key.
+
+**No full-host mode in the core.** The earlier `log_full_host` switch is removed from the core design. If the
+maintainer later wants to audit literal hosts, that is a separate, maintainer-only tool run outside the model's
+reach with conspicuous retention controls (a named output file, deleted after use), not a configuration flag of
+the running service. What it would disclose is the full list of destinations contacted and denied, which is
+exactly the private allowlist plus whatever a model asked for.
 
 ### 8.2 Ephemeral session semantics
 
@@ -591,7 +631,7 @@ parsers and the proxy access would only move the problem. Hence two parts with d
 | Compromised component | Allowlist (host, port, network) | Path and request | Other |
 |---|---|---|---|
 | fetcher | Holds | Holds | It can ask once for the one page it was authorized to fetch. |
-| `broker-front` | Holds (it has no path to a proxy; `broker-egress` accepts only a registered single-use capability and connects only to its host and port) | Holds for `http` entries (`broker-egress` writes the fixed request head itself); **does not hold for `https` entries**, where the encrypted request is built in `broker-front` and can name another path on the same authorized host | It can serve altered bytes to the fetcher, which is why the fetcher's output is still untrusted. |
+| `broker-front` | Holds (it has no path to a proxy; `broker-egress` accepts only a registered single-use capability and connects only to its host and port) Holds for `http` entries (`broker-egress` writes the fixed request head itself). `https` entries are **host-scoped by design** (see the rule below), so there is no path claim to lose | It can serve altered bytes to the fetcher, which is why the fetcher's output is still untrusted. |
 | `broker-egress` | **Does not hold.** It holds the proxy connections. | Does not hold | This is a small trusted component: a fixed-size SOCKS exchange and a byte relay, no TLS, no HTTP, no decompression. |
 | a proxy (Tor or i2pd) | Does not hold for its own network | Does not hold | Treated as untrusted network software; it is pinned (9.8) and sits behind `broker-egress` only. |
 | the controller or host | Does not hold | Does not hold | Out of the container tier's boundary. |
@@ -665,8 +705,22 @@ it, opens the connection through Tor (SOCKS5 with remote hostname resolution, us
 resolves the host. For `http` entries it writes the stored request head itself: `GET` of the canonical path
 exactly as stored, fixed headers `Host`, `User-Agent: Knight-Rider`, `Accept: text/html,text/plain;q=0.8`,
 `Accept-Language: en`, `Accept-Encoding: identity, gzip`, `Connection: close`; no cookies, `Referer`,
-`Authorization`, other method or body. For `https` entries it relays the TLS stream and `broker-front` builds the
-same request inside TLS (the residual in the table above).
+`Authorization`, other method or body.
+
+**HTTPS entries are host-scoped only (decision, round 3).** For `https` entries the encrypted request is built
+by `broker-front`, and `broker-egress` relays ciphertext it cannot read, so no component that is not exposed to
+hostile bytes can see or enforce the path. Rather than claim a path scope that a compromised protocol stack
+could cross, the design chooses the simplest rule that makes the claim true: **an allowlist entry whose
+`schemes` includes `https` authorizes the whole host and port, and may not carry `path_prefixes` or
+`allow_query`** (the allowlist loader rejects such a file, fail closed, with `allowlist_unavailable`). Path
+scoping is enforced for `http` entries only, where `broker-egress` writes the request head itself. The
+alternative (a separately isolated TLS-terminating component that builds the request) was rejected: it is one
+more trusted component, and its compromise would still defeat the path claim. A maintainer who needs a
+path-scoped destination uses an `http` entry. The controller still canonicalizes and logs the path it
+authorized, so the log shows what Claude asked for; for `https` that is an audit record, not an enforced limit.
+**Test:** a file with `https` and `path_prefixes` (or `allow_query`) is rejected; and with `broker-front`
+simulated as compromised, an `http` entry's transmitted request never differs from the canonical path, while
+the `https` test documents that any path on the authorized host is reachable by design.
 
 **Reducing `broker-front`'s exposed surface.**
 
@@ -884,6 +938,22 @@ The test suite proves the flow matrix without any real Tor or I2P:
   parsing past the limit, and a memory probe asserts no allocation above the cap.
 - **Real binaries, not stubs:** the listener-enumeration test must run the shipped images with their shipped
   configuration and external egress denied; a stub-only pass does not count.
+- **Runtime sandbox attestation, observed from the host, for every shipped container** (the stack is started,
+  then each container's effective state is read from the host through the container runtime's inspect output
+  and the host's process and namespace views, and, where the host cannot see it, from a fixed probe that the
+  image carries and the test runs inside; the expected values live next to the Compose file and the test fails
+  on any difference):
+  effective user and group ids; the **effective, permitted, bounding and ambient capability sets** (all
+  empty); `NoNewPrivs` set; seccomp mode (filter, with the expected profile) and the LSM profile or label that
+  is actually applied (an absent LSM is a failure, not a skip, unless the maintainer records an explicit
+  exception for that host); **the exact mount table** (every mount, its source, type and flags: root read-only,
+  `/work` and `/tmp` `noexec,nosuid`, no unexpected bind or volume, no host path, no runtime socket) and a probe
+  that executing a file from `/work` fails and that writing outside the tmpfs fails; **user-namespace state**
+  (rootless or remapped as configured, and no container sharing the host's user, pid, network, ipc or uts
+  namespace); the **device list** (no device beyond the minimal set, none of the host's devices); resource
+  limits (memory, pids, cpu) as enforced by the cgroup, not as written in the Compose file; and the absence of
+  extra capabilities introduced by the runtime. This catches a runtime that silently ignores a setting, a
+  missing LSM, a rootless-mode difference or an altered flag while the topology tests still pass.
 - **Static topology test:** parse the compose file; fail if the fetcher is on any network other than
   `kr_internal`, if `kr_internal` or `kr_proxy` is not `internal: true`, if the fetcher has any mount other than
   the work socket directory, any capability, a writable root, or no limits.
@@ -1280,6 +1350,8 @@ Tests are hermetic: no real Tor or I2P, no real proxy. A fake SOCKS5 and HTTP pr
 - **Topology and flows:** the static compose test and the hermetic port-enumeration and reachability tests of
   9.5; the broker tests of 9.5 (single use, expiry, no host or path from the fetcher, redirects not followed,
   gate limits, fail closed).
+- **Runtime sandbox attestation, log-key and https-scope tests:** the attestation of 9.5, the keyed-hash tests
+  of 8.1 and the https host-scope tests of 9.2.
 - **Pinning:** the refusals of 9.8 and 11.6.
 - **Discovery contract:** the test of section 12 (a candidate sourced from another candidate creates nothing;
   an extra field is rejected).

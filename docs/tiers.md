@@ -123,8 +123,14 @@ UDP SOCKS5 proxy option for SSU2; `inferred`: Tor provides no UDP SOCKS proxy, f
   decompression (it handles hostile bytes too, so it is also treated as breakable, and has no path to a
   proxy), and `broker-egress` is a small gate that accepts one single-use capability from the controller and
   connects only to that network, host and port, then relays bytes without parsing them (`docs/design.md`
-  section 9). One limit stays: for `https` entries the request path is built in `broker-front`, so a taken-over
-  protocol stack could ask for another path on the same authorized host (not another host).
+  section 9). One scoping rule follows from that: an `https` entry
+  authorizes the whole host and port (no path scope), because the path is inside the encrypted stream and no
+  component outside the exposed one can see it; path scoping is enforced for plain `http` entries only. If you
+  need a path-scoped destination, use an `http` entry.
+- The isolation settings are checked as they actually run, not just as written: tests read each container's
+  effective capabilities, seccomp and LSM state, mounts and flags, namespaces, devices and limits from the host
+  (`docs/design.md` 9.5). The request log stores keyed hashes (a key outside the repository, rotated with the
+  log), never literal hosts, so a copied log cannot confirm a guessed destination (`docs/design.md` 8.1).
 - Every hostile boundary has bounded, incremental framing (status and header bytes, header count, message
   and reply sizes, deadlines), and the container egress policy is an exhaustive allow-only-global-unicast rule
   for both address families that also blocks directly connected routes and infrastructure addresses
@@ -156,7 +162,7 @@ UDP SOCKS5 proxy option for SSU2; `inferred`: Tor provides no UDP SOCKS proxy, f
   tiny (a fixed SOCKS exchange and a byte relay, no TLS, no HTTP, no decompression) and is the component the
   Phase 1 security review must read first. Tor and i2pd are treated as untrusted network software.
 - **A bug in `broker-front`** can alter the bytes the fetcher sees, which is why the fetcher's output stays
-  untrusted, and (https only) can change the path.
+  untrusted, and, for `https` entries, can request any path on the already authorized host (which is why they are host-scoped).
 - **A bug in the image or the proxy software** (Tor, i2pd, the fetcher). They are pinned by digest, which
   stops silent changes and does not make them bug-free.
 - Pages that need JavaScript return little or nothing.
