@@ -499,7 +499,12 @@ transmitted request line (section 15).
 7. **Redirects and refresh.** (Closed-schema note: the redirect target is the single, named exception to
    "no backend string outside sanitized content", handled by the `redirect_candidate` variant of 4.4, not by
    weakening the generic rule.) No component follows a redirect. The broker returns the status and raw
-   `Location` value; the sanitizer extracts any HTML refresh directive (7.2 step 4a) and reports it as a redirect
+   `Location` value. **The HTTP `Refresh` response header is ignored in Phase 1** (never followed, never
+   reported as a candidate, never copied anywhere); there is no field or state for it in the broker-to-fetcher
+   record (9.2), which carries only `Location`. A `200` response with a `Refresh` header is an ordinary
+   success. **Test:** a `200` response carrying a `Refresh` header naming another destination produces no
+   capability and no request (a fake proxy records zero further connections) and a normal result. The sanitizer
+   extracts any HTML refresh directive (7.2 step 4a) and reports it as a redirect
    candidate. The controller runs every candidate through rules 1 to 6 as a fresh request, with a fresh
    capability, and follows it only if it passes: at most 3 hops, same transaction, total time and byte caps shared
    across hops. A failing target is `denied_redirect_offlist`, recorded in `provenance.redirects` as
@@ -545,8 +550,8 @@ cut cannot split a sequence the rules would have removed.
    attacker-chosen early text while the later context vanishes, so there is no partial result.
    `text/plain` skips to step 8.
    4a. **Refresh extraction (before anything is dropped).** In a bounded pass over the parse, find
-   `<meta http-equiv="refresh" content="...">` directives (the only place refresh lives besides the `Refresh`
-   response header, which the broker also reports). Parse each strictly (`seconds[;url=target]`). Zero or one
+   `<meta http-equiv="refresh" content="...">` directives (the HTML form is the only refresh form handled; the
+   HTTP `Refresh` response header is ignored, see 6.3 rule 7). Parse each strictly (`seconds[;url=target]`). Zero or one
    directive is allowed; **two or more, or a malformed one, fail closed with `sanitizer_failed`.** A target is
    returned to the controller as a redirect candidate (6.3 rule 7) and is authorized exactly like a
    `Location` redirect; it is never followed by any other component. The element is then dropped in step 5
@@ -864,7 +869,7 @@ is impossible, not merely documented.
 allocating, with immediate close on the first excess byte; values in section 13):
 
 - status line: at most 256 bytes; total header block: at most 16 KiB; header count: at most 64; any single
-  header line: at most 4 KiB; one `Location` or `Refresh` value: at most 2,048 bytes (the URL length cap);
+  header line: at most 4 KiB; one `Location` value: at most 2,048 bytes (the URL length cap);
 - chunk-size lines at most 32 bytes; chunk trailers are rejected;
 - read inactivity timeout 15 s and a total deadline for the whole exchange;
 - decompression ratio is bounded by the decompressed byte limit, not by a ratio guess.
@@ -882,7 +887,7 @@ own recheck (7.2 step 1) is a second backstop, not the first.
 
 The same discipline applies at every other hostile boundary in this design: the capability message from the
 controller (at most 4 KiB), the token message from the fetcher (at most 128 bytes), the fetcher's JSON reply
-(9.6), and the Whonix vsock reply (11.2). Each is read with a fixed maximum frame size announced in a length
+(9.6), and the Whonix channel reply (11.2). Each is read with a fixed maximum frame size announced in a length
 prefix that is itself bounded, read incrementally with the maximum enforced as bytes arrive, and decoded with a
 bounded incremental decoder, never "read to end, then parse". A frame over its maximum, an incomplete frame
 at the deadline, or a length prefix over its maximum closes the connection and returns the matching error
@@ -1070,7 +1075,7 @@ The test suite proves the flow matrix without any real Tor or I2P:
   endless status line, an endless header block, too many headers, one over-long header, an endless `Location`,
   an oversized chunk-size line, a chunk trailer, a message from the controller or the fetcher over its frame
   maximum, a length prefix over its maximum, an incomplete frame left open until the deadline, an oversized
-  fetcher JSON reply, and an oversized or delayed Whonix vsock reply. Each must close the connection before
+  fetcher JSON reply, and an oversized or delayed Whonix channel reply. Each must close the connection before
   parsing past the limit, and a memory probe asserts no allocation above the cap.
 - **Real binaries, not stubs:** the listener-enumeration test must run the shipped images with their shipped
   configuration and external egress denied; a stub-only pass does not count.
@@ -1225,7 +1230,7 @@ shell, never a general `virsh` pass-through, never the libvirt remote API.
 **Host as configuration.** The wrapper reads a config file (`KNIGHT_RIDER_WHONIX_CONFIG`): libvirt URI
 (`qemu:///system` or `qemu:///session`), Workstation and Gateway domain names, the **golden chain definition**
 (paths and recorded digests, 11.6) and the **overlay directory** (a directory that only the runtime identity
-can write and that never holds golden files), the guest service's vsock port, per-verb timeouts, screenshot
+can write and that never holds golden files), the guest channel name and the per-VM channel directory, per-verb timeouts, screenshot
 directory, and transport (`local` or `ssh`). There is **no snapshot-name setting**. Nothing in code assumes a
 particular machine, so the same tool works on a local host, the always-on box, or any KVM host.
 
@@ -1292,30 +1297,55 @@ different transaction, cannot be attributed to the current one.
 
 ### 11.2 Running a fetch inside the Workstation
 
-The Workstation runs a small service `kr-guest-fetch` that listens on an `AF_VSOCK` port and nothing else.
-`verified (read 2026-11-02)`, libvirt domain XML reference: "A vsock host/guest interface. The model
-attribute defaults to virtio ... the optional attribute address of the cid element specifies the CID assigned
-to the guest. If the attribute auto is set to yes, libvirt will assign a free CID automatically ... Since
-4.4.0"; example `<vsock model='virtio'><cid auto='no' address='3'/></vsock>`. The wrapper connects from the
-host to the guest CID and port, sends one permit, and reads one JSON reply under the framing discipline of 9.2 (a frame of at most 256 KiB, a bounded length prefix, incremental bounded decoding, read and total deadlines, close on the first excess byte). A vsock channel is not a network
-interface, so it does not give the Workstation an IP route (`inferred`: from vsock being a host-guest socket
-family; confirm the Whonix Workstation's firewall does not interfere). **But vsock is bidirectional, so "not an
-IP route" is not enough.** The reverse-channel invariant is:
+The wrapper reaches the Workstation through **one libvirt virtio-serial channel**, not through vsock. The
+Workstation runs a small service `kr-guest-fetch` that opens that single named port and nothing else (no
+listening socket of any kind).
 
-> **The host exposes no `AF_VSOCK` listener reachable from the guest.** The wrapper always initiates the
-> connection (host to guest CID and port); no process on the host binds an `AF_VSOCK` socket for the guest to
-> connect to, so a guest-originated connection to the host finds nothing listening.
+**Why not vsock (round 9).** vsock is bidirectional and gives a guest a connection path to whatever the host
+later binds on its vsock namespace. A point-in-time enumeration of host listeners is a check, not an
+isolation boundary: a listener can appear after the check, and a canary test that creates a reachable listener
+and expects the guest not to reach it supplies no control that would make that fail. vsock is therefore
+removed from the design.
 
-The enforcement primitive is the absence of any host-side vsock listener, which holds because the wrapper only
-connects outward, plus a ban in the install guide on running any other vsock service on that host (for
-example other guest-integration daemons). It is `unverified` until tested on the selected KVM and libvirt host:
-how the host kernel routes a guest-originated vsock connection to host listeners, and whether libvirt or QEMU
-offers a finer filter, were not read. **Tests:** (a) **host-side listener enumeration**: at start and in the
-acceptance run, list every `AF_VSOCK` listener on the host (the kernel's socket tables) and assert the set is
-empty; (b) a **guest-originated negative reachability test**: bind a canary `AF_VSOCK` listener on the host,
-boot a disposable Workstation and run a benign probe that tries to connect to the host's CID across a bounded
-port range, and assert that the canary receives no connection; the wrapper refuses to run if the canary is
-reachable (it powers the domains off). The probe is run only on a disposable host with the maintainer's go. The guest service reuses the same
+**The channel (the enforcement primitive).** `verified (read 2026-11-02)`, libvirt domain XML reference,
+"Channel" (libvirt.org/formatdomain.html): a channel "represents a private communication channel between the
+host and the guest"; for `<target type='virtio' name='...'/>` the channel "is exposed in the guest under
+/dev/vport*, and if the optional element name is specified, /dev/virtio-ports/$name"; with
+`<channel type='unix'><source mode='bind' path='...'/>` the host end is a Unix socket at a path; the `state`
+attribute (`connected` or `disconnected`) is output-only; the page is undated. The design uses exactly one such
+channel per VM: `<channel type='unix'>` with a `source mode='bind'` path inside a **per-VM directory created
+and owned by the wrapper** (mode 0700, readable only by the wrapper's identity and the identity QEMU runs as),
+and a `target type='virtio'` with a fixed name. The wrapper connects out to that socket; it creates no
+listening socket and no other service on the host for the guest. The guest's only reachable host endpoint is
+that one device, a point-to-point byte stream whose host end is that one socket. There is **no host service
+namespace for the guest to scan or connect into** (the property that vsock lacked). The wrapper sends one
+permit and reads one JSON reply under the framing discipline of 9.2 (a frame of at most 256 KiB, a bounded
+length prefix, incremental bounded decoding, read and total deadlines, close on the first excess byte). The
+channel carries no IP route; the Workstation's only network path remains the Gateway.
+
+**Status: UNVERIFIED.** That a virtio-serial channel gives the guest no other host-reachable path, and that
+nothing else in the QEMU configuration Whonix ships adds one, is **not established by documentation I read**.
+The libvirt page says only "private communication channel"; the Whonix KVM page (read 2026-11-02, first
+100,000 characters only) has no section on channels, guest agents or vsock that I could read, and I did not
+read the QEMU documentation on virtio-serial or its security notes. Until it is verified on the selected KVM
+and libvirt host by the tests below, **the Whonix tier is not enableable and stays disabled by default**; the
+install guide ships it off, and `kr_status` reports `tier_unavailable` for it. If the tests cannot be made to
+pass, the Whonix tier is not offered at all until a verified mechanism exists.
+
+**Tests (replace the earlier vsock enumeration and canary tests):**
+(a) **Declared devices only**, observed from the host: dump the running domain's XML and the QEMU command line
+(from the process table) and assert the guest has exactly the declared serial channel and the declared
+Whonix network interface to the Gateway's internal network, and no other host-reachable channel: no second
+channel, no vsock device, no guest-agent channel, no shared folder (9p or virtiofs), no USB, no SPICE clipboard
+or file-transfer channel, no extra serial or console device with a host backend other than the declared one;
+(b) **host listener not reachable from the guest**: create a canary host listener of each host-side kind that
+exists (a Unix socket in a world-reachable directory and a loopback TCP port; and, as a belt-and-braces check
+only, an `AF_VSOCK` listener) **both before and after the VM starts**, boot a disposable Workstation, run a
+benign probe in the guest that tries to reach each (the guest has no route to loopback or to host Unix
+sockets, and no vsock device), and assert none is reachable; the canary here is expected to be unreachable
+because the guest has no such device, so a reachable canary is a defect in the configuration, not a test
+artifact; (c) the XML and command-line check (a) is repeated after the transaction, so a configuration change
+during the run is caught. The probe runs only on a disposable host with the maintainer's go. The guest service reuses the same
 worker logic as section 9.6 (same code, same sanitizer, but with no broker; see 11.5), but reaches Tor through the Gateway. The Gateway's address
 and SOCKS port are taken from the Whonix defaults and set in the guest service config (`inferred`: Whonix
 documents the Workstation's Tor access as through the Gateway; read the Whonix documentation for the exact
@@ -1434,7 +1464,7 @@ The same rule as 9.8: nothing executable is trusted by name, and startup is refu
   refuses); a changed chain order; an added memory snapshot; an overlay that survives teardown (the next
   transaction does not start); and a stale overlay left by a crash (destroyed on the next start before anything is served).
 - **Guest service:** `kr-guest-fetch` is installed from a build whose digest is recorded; the wrapper reads
-  the running service's digest through the vsock hello before the first permit and refuses on mismatch. A
+  the running service's digest through the channel hello before the first permit and refuses on mismatch. A
   compromised guest could lie about this, which is why the check is a tripwire and not a boundary; starting
   from a fresh overlay over the measured golden chain is what resets it.
 - **Test:** substitute a different base image, a different domain XML, a different golden chain (file, order or content) and a different
@@ -1535,7 +1565,7 @@ to change when it arrives. The maintainer's approved record is exactly **livenes
 | Chunk-size line; chunk trailers | 32 B; rejected | same | `broker-front` |
 | Controller capability message / fetcher token message | 4 KiB / 128 B | same | `broker-egress`, `broker-front` |
 | `broker-front` to fetcher response (frame, decompressed body, compressed and decompressed counts) | the job's limits plus 4 KiB | 4 MiB plus 4 KiB | fetcher, independently of `broker-front` |
-| Fetcher JSON reply / Whonix vsock reply | 256 KiB each | 1 MiB each | controller, wrapper (incremental, before parse) |
+| Fetcher JSON reply / Whonix channel reply | 256 KiB each | 1 MiB each | controller, wrapper (incremental, before parse) |
 | Read inactivity | 15 s | 30 s | every hostile boundary |
 | Log file | 10 MiB x 5 | n/a | controller |
 
@@ -1641,7 +1671,7 @@ Tests are hermetic: no real Tor or I2P, no real proxy. A fake SOCKS5 and HTTP pr
 13. **Host egress rules** for `kr_egress`: how are they installed and tested without touching the maintainer's
     live firewall (a plan, a dry-run, and an explicit go)?
 14. **A Whonix broker.** Can a broker be placed outside the Workstation (Workstation with no network
-    interface, vsock to a host-side broker, host-side path to the Gateway's Tor proxy) without leaving Whonix's
+    interface, the virtio-serial channel to a host-side broker, host-side path to the Gateway's Tor proxy) without leaving Whonix's
     design? `unverified`: the Whonix documentation was not read for this. Until answered, the allowlist does
     not survive Workstation compromise on that tier (11.5).
 15. **Tor Browser interceptor.** Can a pinned Tor Browser be held to a fail-closed pre-request interceptor,
@@ -1659,7 +1689,7 @@ All read on 2026-11-02 unless stated.
 - i2pd configuration, docs.i2pd.website/en/latest/user-guide/configuration/ (undated). verified.
 - libvirt virsh manual, libvirt.org/manpages/virsh.html (undated; `screenshot` syntax read; its `snapshot-revert` text, which cites libvirt 7.10.0, is no longer used by
   the design). verified.
-- libvirt domain XML format, libvirt.org/formatdomain.html: Vsock section. verified.
+- libvirt domain XML format, libvirt.org/formatdomain.html: Channel section (virtio-serial channels, unix source), read 2026-11-02; the Vsock section was read earlier and the design no longer uses it. verified for the quoted lines.
 - Docker Compose file reference, docs.docker.com/reference/compose-file/networks/ and `/services/`. verified.
 - Whonix wiki, I2P (whonix.org/wiki/I2P) and KVM (whonix.org/wiki/KVM; the page text was truncated by the
   reader at 100,000 characters, so later sections were not read). verified for the quoted lines only.

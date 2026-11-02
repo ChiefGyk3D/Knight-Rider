@@ -17,7 +17,7 @@ Placeholders only: this repository has no real onion or I2P addresses.
 
 | | Tier 1: Tor Browser driven directly | Tier 2: container with Tor and i2pd | Tier 3: Whonix Gateway and Workstation |
 |---|---|---|---|
-| Status in Phase 1 | **Unavailable** until a verified fail-closed interceptor exists | Available (build first) | Available (build second) |
+| Status in Phase 1 | **Unavailable** until a verified fail-closed interceptor exists | Available (build first) | **Disabled by default** until the guest channel is verified on your host (build second) |
 | Isolation | Weakest. Trust boundary is the whole computer. | Middle. The fetcher cannot reach Tor or i2pd at all; a two-part broker fetches only what the controller authorized. | Strongest against address leaks. Workstation reaches only the Gateway. The allowlist does **not** survive a Workstation compromise. |
 | Tor onion services | Yes | Yes | Yes |
 | I2P eepsites | Not by itself. Needs a separate I2P router, otherwise Tor-only. | Yes, through i2pd | Not in Phase 1. Possible only as an experimental, community-supported I2P-over-Tor setup. |
@@ -190,10 +190,12 @@ to wait): a **Gateway** that runs Tor and a **Workstation**
 that can reach only the Gateway. Under KVM/QEMU/libvirt. Every request runs on a fresh
 disposable disk overlay over an immutable, measured golden image, destroyed afterward. You control it with a
 **closed verb set** on the host, never a shell: reset to a fresh overlay, run one allowed fetch, tear down, take a screenshot (for you only; it is not given to Claude). The
-fetch runs inside the Workstation through a service on a vsock channel, which is not an IP network connection;
-vsock works both ways, so the host must run no vsock listener the guest could reach, and the design checks that
-with a listener enumeration and a canary the guest must not be able to connect to (`docs/design.md` 11.2; the
-enforcement is unverified until tested on your host).
+fetch runs inside the Workstation through a single libvirt virtio-serial channel (not vsock, which would give
+the guest a path into whatever the host later listens on). The channel is a point-to-point device whose host end
+is one socket in a directory the wrapper owns, so the guest has no host service namespace to reach. **That
+property is unverified**: it is not established by the documentation I read, so **this tier is disabled by
+default and stays unavailable until tests on your own host show the guest has exactly the declared channel and
+no other host-reachable path** (`docs/design.md` 11.2). If they cannot pass, the tier is not offered.
 
 **Networks.** Tor onion services: yes. I2P: **not in Phase 1.** `verified (read 2026-11-02)`, Whonix wiki,
 I2P page: Whonix does not install I2P; the preferred way is to run the I2P router inside the Workstation and
@@ -277,7 +279,7 @@ the unavailable status of Tier 1, the one-request rule for Tier 3 and the plain 
 allowlist and Workstation compromise are design decisions, not sourced claims.
 
 Verified today (2026-11-02): the Docker Compose descriptions of `internal` and the container options; the
-i2pd and tor(1) option names and defaults quoted in `docs/design.md`; the virsh `screenshot` syntax and the libvirt vsock device; the Whonix I2P page content; the Whonix KVM page's warnings
+i2pd and tor(1) option names and defaults quoted in `docs/design.md`; the virsh `screenshot` syntax and the libvirt virtio-serial channel description; the Whonix I2P page content; the Whonix KVM page's warnings
 (first 100,000 characters only); the tbselenium README; the absence of an automation page on the Tor Browser
 support index.
 
