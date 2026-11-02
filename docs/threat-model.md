@@ -128,9 +128,9 @@ does not exist yet (the repository today contains only the address check).
 | 3 | K02b | T2: worker breach, then container escape | Critical | A browser exploit, then a runtime escape | Rootless, positive host-observed inventory, daemon and worker split | planned |
 | 4 | K02c | T3: Workstation, Gateway and hypervisor crossings | Critical | Browser exploit, then a VM-boundary or Gateway flaw | Generated domain definitions, host-observed effective inventory, host choice (K10) | planned |
 | 5 | K03 | Real IP or identity leak | High | A page that triggers a request, a client bug or a wiring mistake | Tier-specific network invariants observed at the enforcement point | planned |
-| 6 | K04 | Allowlist matching bypass, redirect, unbrokered page-initiated requests, or widening by persuasion | High | A parser difference, a redirect, an allowlisted page, or a plausible message | Canonical match, every request class brokered before dispatch, human-only promotion | planned |
-| 7 | K17 | Public repository leakage: addresses, allowlist content, unfixed detail | High | A contributor or agent mistake | Address check in CI, private tracker, placeholders only | **exists** |
-| 8 | K07 | Log and stored data leave the machine: backup, sync, commit, transcript | High | A sync or backup job, or a mistaken commit | Resolved paths checked, exclusions, exact schema, retention | planned |
+| 6 | K07 | Log and stored data leave the machine: backup, sync, commit, the AI transcript | High | A sync or backup job, a mistaken commit, or text that induces an injected AI to ask for the log | No AI-facing log verb, resolved paths checked, exclusions, exact schema, retention | planned |
+| 7 | K04 | Allowlist matching bypass, redirect, unbrokered page-initiated requests, or widening by persuasion | High | A parser difference, a redirect, an allowlisted page, or a plausible message | Canonical match, every request class brokered before dispatch, human-only promotion | planned |
+| 8 | K17 | Public repository leakage: addresses, allowlist content, unfixed detail | High | A contributor or agent mistake | Address check in CI, private tracker, placeholders only | **exists** |
 | 9 | K05 | Abusive content met, stored or transcribed | High | Fetching a page; no attacker needed | Text-only, nothing persisted; stop-and-report is gate #4 | gate #4 pending |
 | 10 | K06 | Tool abuse: control-channel verbs turned into a shell | High | Influence over tool arguments (an injected AI) | Fixed verbs, argument vectors, schema validation | planned |
 | 11 | K09 | Supply chain: browser, daemons, images, dependencies | High | A compromised or neglected upstream | Parse-and-fail pinning policy, separate provenance check | planned |
@@ -350,7 +350,14 @@ reach it; a non-root sandbox user; ephemeral sessions (K12); engines kept curren
   about how to widen the list.
   **Broker invariant.** Every network request, of every class (navigation, redirect, subresource, prefetch, refresh,
   helper-process request, and discovery probe), passes through one policy-enforcing request path that authorizes it
-  against the allowlist **before** dispatch. Request classes that cannot be brokered are disabled: the sandbox loads
+  **before** dispatch by checking one of exactly two capabilities, never by a special case:
+  (1) a **fetch** requires the destination to match the private allowlist; (2) a **one-hop probe** requires a
+  single-use capability issued by the host-side controller for a candidate that is a canonical link extracted from the
+  current response of an allowlisted fetch, bound to that parent and to the run identifier. The probe capability permits
+  only the bounded liveness, title and category probe (K08); it cannot extract links, cannot be used to fetch, cannot
+  become a seed, is consumed by its one use, and expires when the run ends. A stored lead, a sibling lead that was not
+  issued a capability, a lead from an earlier run, and an arbitrary destination hold no capability and are denied. Default
+  deny is unchanged: nothing is dispatched without one of the two. Request classes that cannot be brokered are disabled: the sandbox loads
   no subresources, runs no script, and does no prefetch or speculative connection, and the fetch returns the document
   text only. Where a tier cannot enforce this (T1 drives a full browser, so brokering depends on browser configuration
   that a compromised browser can bypass), the model does not claim it: T1 is recorded as unable to guarantee the
@@ -358,8 +365,11 @@ reach it; a non-root sandbox user; ephemeral sessions (K12); engines kept curren
 - **Verification.** Planned test: a table of hostile destination forms, each denied, and of valid forms, each passed; a
   redirect-to-forbidden test and a redirect-loop test; a test that no tool verb writes the allowlist path. Planned
   **request-class fixture**: an allowlisted document that tries each request class (image, stylesheet, frame, script,
-  font, refresh, prefetch, helper-process request, and a discovery probe) toward a forbidden destination; assert zero
-  broker dispatches and zero proxy or network observations for that destination, observed at the proxy, not in the guest.
+  font, refresh, prefetch, helper-process request) toward a forbidden destination; assert zero broker dispatches and
+  zero proxy or network observations for that destination, observed at the proxy, not in the guest. Planned
+  **probe-capability tests**: the allowlisted-fetch candidate B is probed exactly once; a second probe of B, an arbitrary
+  destination, a stored lead, a sibling lead without a capability, a lead from an earlier run, and a probe used as a
+  fetch each fail with zero network observation.
 - **Residual.** Judgment of the maintainer on (c). T1 cannot guarantee (d) against a compromised browser. Reopen if the
   allowlist format gains wildcards, or if any request class is ever enabled.
 
@@ -439,17 +449,25 @@ the file the maintainer meant.
   maintainer's research history and, in Phase 2, service identifiers (A-5, A-6). Much of this has no recognizable
   address syntax, so an address pattern check does not see it.
 - **Impact.** High. The same disclosure through the repository is K17, High; the route does not change the consequence.
-- **Prerequisites.** A sync or backup job whose scope includes the directory, or one mistaken command.
+- **Prerequisites.** A sync or backup job whose scope includes the directory, or one mistaken command; or, through the
+  consuming AI, text on any fetched page that induces a request for the log (K01), which is why no such verb exists.
 - **Mitigation.** The state directory is outside any repository and outside every directory a synchronization or backup
   tool covers; the tool resolves its effective paths at startup, prints them on request, and refuses a path inside a
   git work tree. The log has an exact, enumerated schema (D4): timestamp, network, normalized destination, allowlist
   digest, status, byte count, truncation flag, error class; no bodies, query strings, cookies or headers; unknown fields
-  are rejected. Retention is bounded and enforced by the tool. The log is never returned to the AI except through the
-  K01 envelope and only on request.
+  are rejected. Retention is bounded and enforced by the tool. **No AI-facing verb returns log entries,
+  history or resolved paths.** Log inspection is operator-only, like the screenshot verb: it is absent from the AI-facing
+  tool, because "only on request" is no boundary when the requester can be the injected AI (K01). If the AI needs a
+  status operation, it returns only the status of the current request and aggregate health counters, with no historical
+  destinations or times. An AI-facing read of discovery records (K08) is likewise limited to records created in the
+  current run [I].
 - **Verification.** Planned: (1) a command prints the resolved storage paths; the maintainer compares them with the
   exclusion lists of each sync and backup tool in use. (2) A test asserts the schema: every field enumerated, a line
   with an extra field fails. (3) A retention test with aged fixture entries confirms purge. (4) Modes: `stat -c '%a %U'`
-  shows 600 for files and 700 for the directory. (5) A test that a state path inside a git work tree is refused. The
+  shows 600 for files and 700 for the directory. (5) A test that a state path inside a git work tree is refused. (6) A **verb-enumeration test** that fails if the
+  AI-facing tool exposes any verb that returns log entries, history or storage paths, and a **hostile-consumer test**: a
+  stub consumer, driven by injected text, tries every AI-facing verb and argument to obtain prior destinations, times or
+  paths and must get none. The
   repository address check (`./scripts/check-addresses.sh`) is a K17 control only and is not offered as evidence here.
 - **Residual.** The consuming AI's own transcript is outside Knight Rider's storage (F5). A new sync tool added later
   silently widens the scope; the signal to reopen is any change to backup or sync configuration.
@@ -482,8 +500,9 @@ the file the maintainer meant.
     detail, and the schema test fails on an extra field.
   - **One hop.** The only input to discovery is a link extracted, in the current run, from a fetch of a destination that
     matched the allowlist. A stored discovery record is never an eligible input: the discovery function accepts a parent
-    only if it is allowlist-matched, and a record carries no state that makes it a seed. A liveness or title probe of a
-    lead does not extract links from the probed page. Rate and size caps apply to probes (gate #4).
+    only if it is allowlist-matched, and a record carries no state that makes it a seed. A probe runs only under the single-use,
+    run-bound capability described in K04, which the controller issues for candidates from the current response of an
+    allowlisted fetch; a liveness or title probe of a lead does not extract links from the probed page. Rate and size caps apply to probes (gate #4).
   - **Second order.** Fields are normalized, length-capped and stripped of control characters at write time; the log
     format escapes newlines and delimiters; every read path that returns stored strings to the AI uses the K01 envelope
     and says the fields are untrusted; counts and categories are computed by code [I].
@@ -552,14 +571,38 @@ the file the maintainer meant.
   - **Framing.** One length-prefixed frame per fetch. The host reads the fixed-size length first, rejects any length
     above the enforced maximum **before allocating or reading the body**, and reads exactly that many bytes with a
     deadline. Any byte after the frame, a second frame, a short read, or a timeout rejects the result.
-  - **Schema.** A closed schema: the exact set of fields, each with a fixed type and bounds. Unknown, duplicate,
-    missing or wrongly typed fields fail; the text field must be valid UTF-8 and its length must match the declared
-    length. The provenance fields in the envelope are written by the host, not taken from the guest.
+  - **Schema.** The guest-to-host frames are exactly the following, per verb, and nothing else is accepted. The table
+    is normative: the implementation's schema and its tests are generated from it. Unknown, duplicate, missing or
+    wrongly typed fields fail. There is no free-form diagnostic, note or error-text field, because any such field would
+    carry page-derived bytes across the channel.
+
+    | Verb | Field | Type | Bound | Meaning |
+    |---|---|---|---|---|
+    | all | `v` | unsigned integer | exactly 1 | Schema version |
+    | all | `verb` | enumeration | the verb that was requested | Must equal the host's pending request |
+    | `fetch` | `outcome` | enumeration | `ok`, `refused_type`, `failed` | Guest assertion; `failed` carries no text |
+    | `fetch` | `text` | UTF-8 string | at most the configured output cap, in bytes | Sanitized document text; present only when `outcome` is `ok` |
+    | `fetch` | `text_len` | unsigned integer | at most the cap | Must equal the byte length of `text`; the host measures the actual length and rejects a mismatch |
+    | `fetch` | `guest_truncated` | boolean | | A guest assertion about its own truncation, shown to the AI labeled as such |
+    | `probe` | `liveness` | enumeration | `up`, `down`, `timeout` | Guest assertion |
+    | `probe` | `title` | UTF-8 string | at most 200 bytes after normalization | Normalized as in K08 |
+    | `probe` | `category` | enumeration | the closed list the host defines | Chosen from the host's list; any other value fails |
+    | `revert` | `outcome` | enumeration | `ok`, `failed` | No other field |
+
+    The **length prefix** of the frame is authoritative for how many bytes the host reads; `text_len` is checked
+    against it and against the measured string, never trusted alone. **Host-owned, never read from the guest:**
+    destination, network, time, the response byte count (observed at the proxy), the redirect hop count, the error
+    class and its text, the allowlist digest, and the request identifier. Truncation by the **host** (the output cap) is a
+    host observation; `guest_truncated` is a separate guest assertion and the two are never merged. The operator-only
+    `screenshot` verb returns an opaque image to a private operator directory and is not part of the AI-facing channel.
   - **No page-derived output on error.** Any sanitizer failure, crash, timeout, truncation ambiguity or encoding error
     returns a fixed, host-generated error that contains no byte derived from the page (not even a partial title), and
     marks the sandbox poisoned (K12).
-- **Verification.** Planned tests from a **hostile guest stub**, each expected to be rejected with the fixed error and
-  no page-derived bytes: a length above the maximum (the test also checks the host did not allocate near that size); a
+- **Verification.** Planned **schema-generated test**: from the normative table, generate for every verb one test per
+  field for each of absent, duplicated, mistyped and out-of-bound, and one test that adds an extra field with a
+  plausible name (for example a diagnostic or note field); the implementation must reject all of them and must fail the
+  test suite if it accepts any field the table does not list. Planned tests from a **hostile guest stub**, each
+  expected to be rejected with the fixed error and no page-derived bytes: a length above the maximum (the test also checks the host did not allocate near that size); a
   length that disagrees with the data; an unterminated frame; trailing bytes; two frames; a duplicate field; an unknown
   field; a missing field; a mistyped field; invalid UTF-8; a crash or timeout after partial output. Planned property and
   fuzz tests for the in-sandbox parser with a time and memory budget; a bomb fixture that must stop at the cap.
@@ -702,6 +745,11 @@ consumer's transcript (F5).
   which was read through a summarizing fetch.
 
 ## Keeping it honest
+
+- Security claims are repeated in the narrative and in the Threat Dragon file (flow and threat text). A planned check
+  holds a short list of claim phrases (for example the lifecycle in K12, the broker capabilities in K04, the closed
+  result schema in K11) and fails if the narrative and the file disagree on them. The GYST checker validates the
+  file's shape and topics, not that the two documents say the same thing.
 
 - Update this model in the same pull request as any change to a tier, the control verbs, the sanitizer, the log or the
   storage.

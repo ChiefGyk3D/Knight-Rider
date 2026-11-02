@@ -281,15 +281,15 @@
               "threats": [
                 {
                   "id": "t-k07",
-                  "number": 8,
+                  "number": 6,
                   "status": "Open",
                   "severity": "High",
                   "type": "Information disclosure",
                   "modelType": "STRIDE",
                   "new": false,
                   "title": "K07: Data leakage of the log and stored data leaving the machine",
-                  "description": "Asset at risk: the research history, and in Phase 2 service identifiers. Actor class: a backup or sync job, or a mistaken commit or paste. Prerequisites: a sync or backup job whose scope includes the directory, or one mistaken command. Rank 8. Full entry: docs/threat-model.md, K07.",
-                  "mitigation": "Partial. State directory outside any repository and every directory a sync or backup tool covers; effective paths resolved and printed at startup; refuse a path inside a git work tree; exact enumerated log schema (no bodies, query strings, cookies or headers; unknown fields rejected); bounded retention enforced by the tool; log returned to the AI only through the envelope and on request. Verification: Planned: a command prints resolved storage paths and the maintainer compares them with the exclusion lists of each sync and backup tool; schema test (extra field fails); retention test with aged fixtures; stat -c '%a %U' shows 600 files and 700 directory; test that a path in a git work tree is refused. The repository address check is a K17 control only. Residual: The AI's own transcript is outside Knight Rider's storage; a new sync tool silently widens scope. Status is Open: the design is not built; every verification marked planned is a Phase 1 test."
+                  "description": "Asset at risk: the research history, and in Phase 2 service identifiers. Actor class: a backup or sync job, or a mistaken commit or paste. Prerequisites: a sync or backup job whose scope includes the directory, one mistaken command, or text that induces an injected AI to ask for the log. Rank 6. Full entry: docs/threat-model.md, K07.",
+                  "mitigation": "Partial. State directory outside any repository and every directory a sync or backup tool covers; effective paths resolved and printed at startup; refuse a path inside a git work tree; exact enumerated log schema (no bodies, query strings, cookies or headers; unknown fields rejected); bounded retention enforced by the tool; no AI-facing verb returns log entries, history or resolved paths (log inspection is operator-only, like screenshots; any AI status operation returns only the current request's status and aggregate health counters). Verification: Planned: a command prints resolved storage paths and the maintainer compares them with the exclusion lists of each sync and backup tool; schema test (extra field fails); retention test with aged fixtures; stat -c '%a %U' shows 600 files and 700 directory; test that a path in a git work tree is refused; verb-enumeration test (no AI-facing verb returns log entries, history or paths) and a hostile-consumer test driven by injected text. The repository address check is a K17 control only. Residual: The AI's own transcript is outside Knight Rider's storage; a new sync tool silently widens scope. Status is Open: the design is not built; every verification marked planned is a Phase 1 test."
                 },
                 {
                   "id": "t-k07b",
@@ -332,7 +332,7 @@
                   "new": false,
                   "title": "K08: Discovery fan-out past one hop, and second-order prompt injection through stored fields",
                   "description": "Asset at risk: the Phase 2 scope decision and the consuming AI session. Actor class: a page author who places a lead or sets a title or short field. Prerequisites: a page containing a lead or a field; for the second-order case, a later read of the store. Rank 13. Full entry: docs/threat-model.md, K08.",
-                  "mitigation": "Partial. Record schema is exactly liveness, title and category; the only input to discovery is a link extracted in the current run from a fetch of an allowlisted destination; a stored record is never an eligible input and carries no seed state; probes extract no links; fields normalized, length-capped and stripped of control characters at write time; log escapes newlines and delimiters; every read returns stored strings in the K01 envelope as untrusted. Verification: Planned tests with the network stubbed: graph fixture where allowlisted page A links to B and B links to C asserts exactly one request to B, none to C and no record for C; schema test that an extra field fails; test that a stored record cannot be passed to the discovery entry point; title with newline, fake log line, fake envelope and control characters stays one log line and is escaped on read. Residual: Plain-language instructions in a title pass. Gate #4 is not written; discovery must not run until it is. Status is Open: the design is not built; every verification marked planned is a Phase 1 test."
+                  "mitigation": "Partial. Record schema is exactly liveness, title and category; the only input to discovery is a link extracted in the current run from a fetch of an allowlisted destination; a stored record is never an eligible input and carries no seed state; probes extract no links; fields normalized, length-capped and stripped of control characters at write time; log escapes newlines and delimiters; every read returns stored strings in the K01 envelope as untrusted. Verification: Planned tests with the network stubbed: graph fixture where allowlisted page A links to B and B links to C asserts exactly one request to B, none to C and no record for C; schema test that an extra field fails; test that a stored record cannot be passed to the discovery entry point; probes run only under the single-use run-bound capability from K04; title with newline, fake log line, fake envelope and control characters stays one log line and is escaped on read. Residual: Plain-language instructions in a title pass. Gate #4 is not written; discovery must not run until it is. Status is Open: the design is not built; every verification marked planned is a Phase 1 test."
                 }
               ],
               "isALog": false
@@ -355,14 +355,14 @@
               "threats": [
                 {
                   "id": "t-k17",
-                  "number": 7,
+                  "number": 8,
                   "status": "Open",
                   "severity": "High",
                   "type": "Information disclosure",
                   "modelType": "STRIDE",
                   "new": false,
                   "title": "K17: Data leakage into the public repository: addresses, allowlist content, unfixed detail",
-                  "description": "Asset at risk: repository cleanliness and the maintainer's safety. Actor class: a contributor or an agent drafting text. Prerequisites: a mistake. Rank 7. Full entry: docs/threat-model.md, K17.",
+                  "description": "Asset at risk: repository cleanliness and the maintainer's safety. Actor class: a contributor or an agent drafting text. Prerequisites: a mistake. Rank 8. Full entry: docs/threat-model.md, K17.",
                   "mitigation": "Implemented in part. scripts/check-addresses.sh over every tracked file in CI through tests/run.sh; placeholder-only example allowlist; SECURITY.md routes unfixed detail to the private tracker; this model names classes, not steps. Verification: Command: ./tests/run.sh prints 'all checks passed' and exits 0 (exists). Unit test: tests/test_check_addresses.sh. Residual: The check finds address-shaped strings, not an allowlist described in words; review stays human. Status is Open: the design is not built; every verification marked planned is a Phase 1 test."
                 }
               ],
@@ -709,7 +709,7 @@
             },
             "data": {
               "name": "Fetch request into the sandbox",
-              "description": "Destination plus caps; clean-state attestation before every fetch.",
+              "description": "Destination plus caps. One fetch per sandbox instance; host verification of host-observable properties only; destroy and recreate for unobservable VM state; poisoned after any failure (K12).",
               "threats": []
             }
           },
@@ -736,7 +736,7 @@
                   "new": false,
                   "title": "K11: Hostile bytes parsed in the core, and the sandbox-to-host result channel",
                   "description": "Asset at risk: the host process that receives sandbox output. Actor class: a page author or a malformed server response. Prerequisites: a page or response. Rank 16. Full entry: docs/threat-model.md, K11.",
-                  "mitigation": "Partial. Parse and sanitize inside the sandbox; memory-safe language and maintained parser; limits on nesting, size and decompression ratio; unknown encodings refused. Result channel fails closed: one length-prefixed frame, maximum enforced before allocation or body read, deadline, trailing or repeated frames rejected, closed schema (unknown, duplicate, missing or mistyped fields fail, valid UTF-8, length match), provenance written by the host, and any sanitizer failure returns a fixed host-generated error with no page-derived bytes and poisons the sandbox. Verification: Planned tests from a hostile guest stub: oversize length (and no near-maximum allocation), length mismatch, unterminated frame, trailing bytes, two frames, duplicate, unknown, missing and mistyped fields, invalid UTF-8, crash or timeout after partial output; each rejected with the fixed error. Plus fuzz and bomb tests for the in-sandbox parser. Residual: A sandbox-contained parser bug can still forge output. Status is Open: the design is not built; every verification marked planned is a Phase 1 test."
+                  "mitigation": "Partial. Parse and sanitize inside the sandbox; memory-safe language and maintained parser; limits on nesting, size and decompression ratio; unknown encodings refused. Result channel fails closed: one length-prefixed frame, maximum enforced before allocation or body read, deadline, trailing or repeated frames rejected, closed per-verb schema enumerated in the model (fetch: version, verb, outcome, text, text_len, guest_truncated; probe: liveness, title, category; revert: outcome; no free-form diagnostic field; frame length prefix authoritative; unknown, duplicate, missing or mistyped fields fail, valid UTF-8, length match), provenance (destination, network, time, response byte count, hops, error text, allowlist digest) host-owned, and any sanitizer failure returns a fixed host-generated error with no page-derived bytes and poisons the sandbox. Verification: Planned schema-generated test: for every verb and field, absent, duplicated, mistyped and out-of-bound cases plus an extra plausibly named field must all be rejected. Planned tests from a hostile guest stub: oversize length (and no near-maximum allocation), length mismatch, unterminated frame, trailing bytes, two frames, duplicate, unknown, missing and mistyped fields, invalid UTF-8, crash or timeout after partial output; each rejected with the fixed error. Plus fuzz and bomb tests for the in-sandbox parser. Residual: A sandbox-contained parser bug can still forge output. Status is Open: the design is not built; every verification marked planned is a Phase 1 test."
                 }
               ]
             }
@@ -799,15 +799,15 @@
               "threats": [
                 {
                   "id": "t-k04",
-                  "number": 6,
+                  "number": 7,
                   "status": "Open",
                   "severity": "High",
                   "type": "Spoofing",
                   "modelType": "STRIDE",
                   "new": false,
                   "title": "K04: Allowlist matching bypass, redirect, unbrokered page-initiated requests, or widening by persuasion",
-                  "description": "Asset at risk: default deny. Actor class: a page author (look-alike, redirect, persuasion). Prerequisites: a parser difference or redirect; a plausible message. Rank 6. Full entry: docs/threat-model.md, K04.",
-                  "mitigation": "Partial. One canonical host, port and scheme; exact match; unparseable input rejected; redirects re-checked per hop and capped; broker invariant: every request class (navigation, redirect, subresource, prefetch, refresh, helper-process request, discovery probe) is authorized against the allowlist before dispatch and unbrokerable classes are disabled (T1 cannot guarantee this against a compromised browser); no verb edits the allowlist; promotion is a human act outside any AI-callable tool; denial text gives no hint to widen. Verification: Planned test: table of hostile destination forms denied and valid forms passed; redirect-to-forbidden and loop tests; test that no tool verb writes the allowlist path; request-class fixture where an allowlisted document tries each request class toward a forbidden destination and the proxy observes zero dispatches for it. Residual: Judgment of the maintainer on persuasion; reopen if the format gains wildcards. Status is Open: the design is not built; every verification marked planned is a Phase 1 test."
+                  "description": "Asset at risk: default deny. Actor class: a page author (look-alike, redirect, persuasion). Prerequisites: a parser difference or redirect; a plausible message. Rank 7. Full entry: docs/threat-model.md, K04.",
+                  "mitigation": "Partial. One canonical host, port and scheme; exact match; unparseable input rejected; redirects re-checked per hop and capped; broker invariant: every request class (navigation, redirect, subresource, prefetch, refresh, helper-process request, discovery probe) is authorized against the allowlist before dispatch and unbrokerable classes are disabled (T1 cannot guarantee this against a compromised browser); no verb edits the allowlist; promotion is a human act outside any AI-callable tool; denial text gives no hint to widen. The broker checks one of exactly two capabilities: a fetch needs an allowlist match; a one-hop probe needs a single-use, run-bound capability issued by the controller for a canonical link taken from the current response of an allowlisted fetch, permitting only the bounded liveness, title and category probe (no link extraction, no fetch, no seeding). Stored, sibling, earlier-run and arbitrary destinations hold no capability. Verification: Planned test: table of hostile destination forms denied and valid forms passed; redirect-to-forbidden and loop tests; test that no tool verb writes the allowlist path; request-class fixture where an allowlisted document tries each request class toward a forbidden destination and the proxy observes zero dispatches for it; probe-capability tests: the candidate is probed exactly once, and a second probe, arbitrary destination, stored lead, sibling lead, earlier-run lead or probe used as a fetch each fail with zero network observation. Residual: Judgment of the maintainer on persuasion; reopen if the format gains wildcards. Status is Open: the design is not built; every verification marked planned is a Phase 1 test."
                 },
                 {
                   "id": "t-k05",
