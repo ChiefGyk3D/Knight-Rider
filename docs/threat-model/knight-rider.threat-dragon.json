@@ -229,7 +229,7 @@
             "shape": "process",
             "data": {
               "name": "Tier control wrapper",
-              "description": "Closed verbs: revert, fetch. Screenshot is operator-only and never reaches the AI.",
+              "description": "Closed verb registry: AI-facing fetch and status; controller-only probe and revert; operator-only screenshot, log and paths. Hypervisor operations are a second closed list.",
               "threats": []
             },
             "position": {
@@ -320,7 +320,7 @@
             "shape": "store",
             "data": {
               "name": "Discovery records (Phase 2)",
-              "description": "Exactly liveness, title, category. Never an input to discovery.",
+              "description": "Key: canonical destination. Payload: liveness, title, category. No other column, key, index, side table or seed state. Never an input to discovery.",
               "threats": [
                 {
                   "id": "t-k08",
@@ -332,7 +332,7 @@
                   "new": false,
                   "title": "K08: Discovery fan-out past one hop, and second-order prompt injection through stored fields",
                   "description": "Asset at risk: the Phase 2 scope decision and the consuming AI session. Actor class: a page author who places a lead or sets a title or short field. Prerequisites: a page containing a lead or a field; for the second-order case, a later read of the store. Rank 13. Full entry: docs/threat-model.md, K08.",
-                  "mitigation": "Partial. Record schema is exactly liveness, title and category; the only input to discovery is a link extracted in the current run from a fetch of an allowlisted destination; a stored record is never an eligible input and carries no seed state; probes extract no links; fields normalized, length-capped and stripped of control characters at write time; log escapes newlines and delimiters; every read returns stored strings in the K01 envelope as untrusted. Verification: Planned tests with the network stubbed: graph fixture where allowlisted page A links to B and B links to C asserts exactly one request to B, none to C and no record for C; schema test that an extra field fails; test that a stored record cannot be passed to the discovery entry point; probes run only under the single-use run-bound capability from K04; title with newline, fake log line, fake envelope and control characters stays one log line and is escaped on read. Residual: Plain-language instructions in a title pass. Gate #4 is not written; discovery must not run until it is. Status is Open: the design is not built; every verification marked planned is a Phase 1 test."
+                  "mitigation": "Partial. Persisted representation is declared in full: one collection keyed by canonical destination with payload liveness, title and category, and no other column, key, index, parent identifier, time, run identifier, seed flag, side table or sidecar file; the parent binding lives in controller memory for the run only; the only input to discovery is a link extracted in the current run from a fetch of an allowlisted destination; a stored record is never an eligible input and carries no seed state; probes extract no links; fields normalized, length-capped and stripped of control characters at write time; log escapes newlines and delimiters; every read returns stored strings in the K01 envelope as untrusted. Verification: Planned tests with the network stubbed: full-store dump test (schema introspection, every state file, journals and the log compared with the declared representation; any undeclared column, key, index, auxiliary record or seed state fails); graph fixture where allowlisted page A links to B and B links to C asserts exactly one request to B, none to C and no record for C; schema test that an extra field fails; test that a stored record cannot be passed to the discovery entry point; probes run only under the single-use run-bound capability from K04; title with newline, fake log line, fake envelope and control characters stays one log line and is escaped on read. Residual: Plain-language instructions in a title pass. Gate #4 is not written; discovery must not run until it is. Status is Open: the design is not built; every verification marked planned is a Phase 1 test."
                 }
               ],
               "isALog": false
@@ -507,7 +507,7 @@
                   "new": false,
                   "title": "K10: The Whonix host question",
                   "description": "Asset at risk: the host's credentials, including the Claude login if the box is shared. Actor class: a guest or hypervisor attacker, or the holder of the wrapper's hypervisor credential. Prerequisites: a hypervisor escape (heavy) or the wrapper credential in the wrong hands (light). Rank 12. Full entry: docs/threat-model.md, K10.",
-                  "mitigation": "Open. Prefer a host used only for these VMs; if the always-on box is shared, keep other credentials out of reach of the VM-running account or use a separate hypervisor host; the wrapper connects as a dedicated account with rights only on named domains over an authenticated encrypted channel; host is configuration; Proxmox would be a separate driver (unverified). Verification: Maintainer checklist before first run: credentials present on the host, account that runs the VMs, access-control listing for it. Planned test: the wrapper refuses a domain name not in its configuration. Residual: Virtualization enlarges the trusted computing base; this is the maintainer's decision, not a code fix. Status is Open: the design is not built; every verification marked planned is a Phase 1 test."
+                  "mitigation": "Open. Prefer a host used only for these VMs; if the always-on box is shared, keep other credentials out of reach of the VM-running account or use a separate hypervisor host; the wrapper connects as a dedicated account with rights only on named domains over an authenticated encrypted channel; host is configuration; Proxmox would be a separate driver (unverified). Verification: Maintainer checklist before first run: credentials present on the host, account that runs the VMs. Enforcement-level negative tests with the wrapper's actual credential: operations on an unconfigured domain, network, storage pool, secret and a host-level action must each be denied by the hypervisor; effective permissions are compared with a closed expected set (exactly the hypervisor operations in the verb registry on named domains), startup refuses if broader, and the check fails if the controller can issue any hypervisor operation outside the set. Planned test: the wrapper also refuses a domain name not in its configuration. Residual: Virtualization enlarges the trusted computing base; this is the maintainer's decision, not a code fix. Status is Open: the design is not built; every verification marked planned is a Phase 1 test."
                 }
               ]
             },
@@ -608,7 +608,7 @@
             },
             "data": {
               "name": "Tool call",
-              "description": "One destination per call; no free-form command text; no screenshot verb.",
+              "description": "AI-facing verbs are exactly fetch and status; one destination per call; no free-form command text; no probe, screenshot or log verb.",
               "threats": []
             }
           },
@@ -681,7 +681,7 @@
             },
             "data": {
               "name": "Control verb and arguments",
-              "description": "Closed verb set with validated arguments, as argument vectors.",
+              "description": "Controller-to-guest verbs are exactly fetch, probe and revert, with validated arguments as argument vectors; derived from the verb registry in docs/threat-model.md.",
               "threats": [
                 {
                   "id": "t-k06",
@@ -693,7 +693,7 @@
                   "new": false,
                   "title": "K06: Tool abuse: restricted verbs turned into a shell",
                   "description": "Asset at risk: the host and the guest. Actor class: an injected AI choosing tool arguments, or a compromised guest. Prerequisites: control of a tool argument or of the guest. Rank 10. Full entry: docs/threat-model.md, K06.",
-                  "mitigation": "Partial. Closed verb set with schemas; arguments passed as vectors, never shell strings; option-like values rejected; names of snapshots and domains from configuration; length limits; guest accepts only schema-valid messages; host treats guest output as untrusted. Verification: Planned test: hostile-argument fixtures against every verb, rejected before any process starts, with a stub that fails if one is spawned; fuzz of the host-side guest-message parser. Residual: Parser bugs remain possible; keep the channel small and review it first. Status is Open: the design is not built; every verification marked planned is a Phase 1 test."
+                  "mitigation": "Partial. Closed verb registry (AI-facing fetch and status; controller-only probe and revert; operator-only screenshot, log, paths) with schemas, and argument and exposure tests generated from the registry so probe is covered; arguments passed as vectors, never shell strings; option-like values rejected; names of snapshots and domains from configuration; length limits; guest accepts only schema-valid messages; host treats guest output as untrusted. Verification: Planned test: hostile-argument fixtures against every verb in the registry (the test fails if a verb has no fixtures), rejected before any process starts, with a stub that fails if one is spawned; fuzz of the host-side guest-message parser. Residual: Parser bugs remain possible; keep the channel small and review it first. Status is Open: the design is not built; every verification marked planned is a Phase 1 test."
                 }
               ]
             }
@@ -736,7 +736,7 @@
                   "new": false,
                   "title": "K11: Hostile bytes parsed in the core, and the sandbox-to-host result channel",
                   "description": "Asset at risk: the host process that receives sandbox output. Actor class: a page author or a malformed server response. Prerequisites: a page or response. Rank 16. Full entry: docs/threat-model.md, K11.",
-                  "mitigation": "Partial. Parse and sanitize inside the sandbox; memory-safe language and maintained parser; limits on nesting, size and decompression ratio; unknown encodings refused. Result channel fails closed: one length-prefixed frame, maximum enforced before allocation or body read, deadline, trailing or repeated frames rejected, closed per-verb schema enumerated in the model (fetch: version, verb, outcome, text, text_len, guest_truncated; probe: liveness, title, category; revert: outcome; no free-form diagnostic field; frame length prefix authoritative; unknown, duplicate, missing or mistyped fields fail, valid UTF-8, length match), provenance (destination, network, time, response byte count, hops, error text, allowlist digest) host-owned, and any sanitizer failure returns a fixed host-generated error with no page-derived bytes and poisons the sandbox. Verification: Planned schema-generated test: for every verb and field, absent, duplicated, mistyped and out-of-bound cases plus an extra plausibly named field must all be rejected. Planned tests from a hostile guest stub: oversize length (and no near-maximum allocation), length mismatch, unterminated frame, trailing bytes, two frames, duplicate, unknown, missing and mistyped fields, invalid UTF-8, crash or timeout after partial output; each rejected with the fixed error. Plus fuzz and bomb tests for the in-sandbox parser. Residual: A sandbox-contained parser bug can still forge output. Status is Open: the design is not built; every verification marked planned is a Phase 1 test."
+                  "mitigation": "Partial. Parse and sanitize inside the sandbox; memory-safe language and maintained parser; limits on nesting, size and decompression ratio; unknown encodings refused. Result channel fails closed: one length-prefixed frame, maximum enforced before allocation or body read, deadline, trailing or repeated frames rejected, closed schema with one variant per (verb, outcome) in the model, required fields listed and every other field forbidden, no optional fields (fetch ok: v, verb, outcome, text, text_len, guest_truncated; fetch refused_type or failed: v, verb, outcome; probe up: v, verb, liveness, title, category; probe down or timeout: v, verb, liveness; revert: v, verb, outcome; no free-form diagnostic field; text_len checked only against the text's byte length; frame length prefix authoritative; unknown, duplicate, missing or mistyped fields fail, valid UTF-8, length match), provenance (destination, network, time, response byte count, hops, error text, allowlist digest) host-owned, and any sanitizer failure returns a fixed host-generated error with no page-derived bytes and poisons the sandbox. Verification: Planned schema-generated test: for every (verb, outcome) variant, a positive case, required fields absent, duplicated, mistyped and out-of-bound, every forbidden field present (for example text on a failed fetch, title on a probe that is down), and an extra plausibly named field must all be rejected. Planned tests from a hostile guest stub: oversize length (and no near-maximum allocation), length mismatch, unterminated frame, trailing bytes, two frames, duplicate, unknown, missing and mistyped fields, invalid UTF-8, crash or timeout after partial output; each rejected with the fixed error. Plus fuzz and bomb tests for the in-sandbox parser. Residual: A sandbox-contained parser bug can still forge output. Status is Open: the design is not built; every verification marked planned is a Phase 1 test."
                 }
               ]
             }
@@ -877,7 +877,7 @@
             },
             "data": {
               "name": "Discovery write",
-              "description": "Three fields only; one hop from an allowlisted fetch.",
+              "description": "Destination key plus three payload fields; no parent, time or run identifier persisted; probe runs under a single-use run-bound capability.",
               "threats": []
             }
           },

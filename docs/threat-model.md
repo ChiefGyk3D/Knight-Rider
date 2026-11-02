@@ -38,15 +38,44 @@ the line that differs is the place to start.
 | D2 | Claude is the consumer, through a skill or MCP tool. The tool returns sanitized plain text, never raw markup, images or files. | [D] #1, #2 |
 | D3 | Default deny. The allowlist is a file the tool reads from a configured path, kept in the maintainer's private synced config. The repository ships only a placeholder example. Agents never edit it. | [D] #2 |
 | D4 | Size and time caps, request logging, ephemeral sessions reverted to a clean state after each run, and no repos, secrets or tokens reachable from inside the sandbox. | [D] #2 |
-| D5 | The Whonix tier is driven through a restricted verb set: revert to a clean snapshot, run an allowed fetch, take a screenshot. Never an open shell. The screenshot verb is operator-only: it writes to a private operator directory for the maintainer's diagnosis and is not exposed through the AI-facing tool, so no image ever crosses to the AI (consistent with D2). | [D] #2; the operator-only reading is an assumption [I] |
+| D5 | The Whonix tier is driven through the closed verb set in the Verb registry (revert to a clean snapshot, fetch, probe, and the operator-only screenshot). Never an open shell. The screenshot verb is operator-only: it writes to a private operator directory for the maintainer's diagnosis and is not exposed through the AI-facing tool, so no image ever crosses to the AI (consistent with D2). | [D] #2; the operator-only reading is an assumption [I] |
 | D6 | The Whonix host is a local machine now; later the always-on Ubuntu box or an on-demand VM on a Proxmox cluster. The control wrapper takes the host as configuration. | [D] #2 |
-| D7 | Discovery (Phase 2): one hop from an allowlisted page, record exactly three fields (liveness, title, category), never page bodies. A recorded lead is never an input to further discovery. Promotion to the allowlist is a human act. Issue #1 also mentions a public source and a confidence note; this model leaves them out because #2 and #4 name three fields, and adding any is a decision for the maintainer. | [D] #2, #4 |
+| D7 | Discovery (Phase 2): one hop from an allowlisted page, record exactly three payload fields (liveness, title, category), keyed by the lead's canonical destination, and nothing else persisted (see K08), never page bodies. A recorded lead is never an input to further discovery. Promotion to the allowlist is a human act. Issue #1 also mentions a public source and a confidence note; this model leaves them out because #2 and #4 name three fields, and adding any is a decision for the maintainer. | [D] #2, #4 |
 | D8 | The authenticated mode is off by default, never ships enabled, and is not designed until its own safety gate is approved. | [D] #1, #2 |
 | D9 | Nothing runs against the real Tor or I2P networks until the maintainer approves it; Phase 1 tests are hermetic with the network stubbed. | [D] #1, #2 |
 | A1 | **Assumed, not decided:** in the container tier the network-facing daemons (Tor, i2pd) run in one container and the fetch-and-sanitize worker runs in another that sits on an internal network with a route only to the daemons' local proxy ports. "No other network route" is then a property of the worker, because a daemon must itself reach the internet. | [I] |
 | A2 | **Assumed:** the parser and sanitizer run inside the sandbox, and only a length-capped UTF-8 text envelope crosses to the host. | [I] |
 | A3 | **Assumed:** the tool's single entry point takes one destination per call and no free-form command text. | [I] |
 | A4 | **Assumed:** the tool is client-only. It never publishes an onion service or an I2P hidden service. | [I] |
+
+## Verb registry (normative)
+
+One list. Every table, test and diagram in this model that names a verb derives from it or is checked against it. A verb
+that is not in this registry does not exist; a verb in it is covered by every test that says "every verb".
+
+| Verb | Caller (who may invoke it) | Arguments | Reaches the guest | Notes |
+|---|---|---|---|---|
+| `fetch` | The AI-facing tool entry (and the controller on its behalf) | One destination, which must match the allowlist (K04) | Yes | Returns the sanitized text envelope |
+| `status` | The AI-facing tool entry | None | No | Returns only the status of the current request and aggregate health counters; no history, destinations, times or paths (K07) |
+| `probe` | The controller only; **never the AI** | One candidate destination, taken only under a single-use, run-bound capability (K04, K08) | Yes | Liveness, title and category only; no link extraction |
+| `revert` | The controller only | None; the snapshot or image name comes from configuration | Yes (host acts on the guest's backing state) | Part of the one-fetch-per-instance lifecycle (K12) |
+| `screenshot` | The operator only | None | Yes | Writes to a private operator directory; never crosses to the AI |
+| `log` | The operator only | A bounded selector | No | Log inspection (K07); absent from the AI-facing tool |
+| `paths` | The operator only | None | No | Prints effective storage paths (K07); absent from the AI-facing tool |
+
+The AI-facing set is therefore exactly `fetch` and `status`. The controller-to-guest set is exactly `fetch`, `probe` and
+`revert` (`screenshot` for the operator). Allowlist promotion is not a verb: it is a human act outside any tool (D7).
+
+**Hypervisor operations** (T3), a second closed list that the wrapper may use against the hypervisor, and nothing else:
+start, stop and destroy a **named** Workstation or Gateway domain; revert a named domain to its recorded clean snapshot;
+read-only inspection of a named domain's effective definition and state (K02c, K12). There is no operation to create,
+define, edit, enumerate unrelated objects, or touch networks, storage pools, secrets or the host itself.
+
+**Derivation.** Planned `scripts/check-verbs`-style check: parse this registry, the Threat Dragon file's flow and
+process descriptions, and the K04, K06, K07 and K11 test lists; fail if a verb appears in any of them that the registry
+lacks, or a registry verb is missing from the K06 argument tests, the K11 schema tests or the verb-exposure test, or if
+the AI-facing set in the code differs from `fetch` and `status`. The K06 hostile-argument tests and the K07 and K11
+exposure tests are generated from the registry, so adding a verb adds its tests.
 
 ## What each tier can reach (verified where it could be)
 
@@ -73,7 +102,7 @@ fetch profile per network, not one browser for both.
 | A-3 | The consuming AI session and its tool access | Integrity | Hostile page text aims at it; whatever tools it holds, an injected instruction can try to use. |
 | A-4 | The allowlist (private) | Private, sensitive | Its contents reveal what the maintainer researches; its integrity decides what the tool may touch. |
 | A-5 | The request log | Private, sensitive | A record of destinations and times. A target for theft, and for accidental publication. |
-| A-6 | Discovery metadata (Phase 2): titles, liveness and categories of leads (the lead's identity is implied by the record) | Private, sensitive; possibly legally sensitive | Identifiers of services are the content of the database. |
+| A-6 | Discovery metadata (Phase 2): titles, liveness and categories of leads, keyed by the lead's canonical destination | Private, sensitive; possibly legally sensitive | Identifiers of services are the content of the database. |
 | A-7 | Integrity of what the tool reports | Integrity | OSINT conclusions rest on it. |
 | A-8 | The maintainer's legal and personal safety around abusive content | Safety | Stored or transcribed abusive text is a liability (gate #4). |
 | A-9 | Repository and release integrity, and the public repository's cleanliness (no addresses, no unfixed detail) | Integrity | Public project; a leaked address or exploit detail cannot be unwritten. |
@@ -135,7 +164,7 @@ does not exist yet (the repository today contains only the address check).
 | 10 | K06 | Tool abuse: control-channel verbs turned into a shell | High | Influence over tool arguments (an injected AI) | Fixed verbs, argument vectors, schema validation | planned |
 | 11 | K09 | Supply chain: browser, daemons, images, dependencies | High | A compromised or neglected upstream | Parse-and-fail pinning policy, separate provenance check | planned |
 | 12 | K10 | The Whonix host question | High | A VM escape, or credentials left on the shared host | Dedicated host or hypervisor, least-privilege libvirt user | maintainer decision |
-| 13 | K08 | Discovery lane: fan-out past one hop, and second-order injection | High | A page with a lead, a later read of the store | Exact three-field schema, one-hop rule, escaped reads | planned |
+| 13 | K08 | Discovery lane: fan-out past one hop, and second-order injection | High | A page with a lead, a later read of the store | Declared persisted representation, one-hop rule, escaped reads | planned |
 | 14 | K04b | Allowlist file substitution and same-user tampering | High | Same-user code execution (K02a gives it) | Constrained symlink-free resolution, descriptor read; same-user tampering accepted | planned; residual accepted |
 | 15 | K12 | Ephemerality fails: state survives a run or links runs | Medium | A prior hostile page or a failed cleanup | One fetch per instance, host-controlled evidence only, poisoned on any failure | planned |
 | 16 | K11 | Hostile bytes parsed in the core, and the sandbox-to-host result channel | Medium | A page, or a compromised sandbox | Length-prefixed closed-schema frame, fail closed, no page bytes on error | planned |
@@ -433,12 +462,12 @@ the file the maintainer meant.
   host mishandles.
 - **Impact.** High: it turns the narrow interface into code execution on the host or guest.
 - **Prerequisites.** Control of a tool argument (an injected AI, K01), or a compromised guest for the reverse direction.
-- **Mitigation.** A closed set of verbs (D5), each with a schema; the screenshot verb is operator-only and absent from the AI-facing tool, so a test enumerates the tool's verbs and fails if it appears; arguments are validated, then passed as an argument
+- **Mitigation.** The closed verb registry (D5, "Verb registry"), each verb with a schema; the argument and exposure tests are generated from the registry, so `probe`, `status`, `revert` and `fetch` are all covered; the screenshot verb is operator-only and absent from the AI-facing tool, so a test enumerates the tool's verbs and fails if it appears; arguments are validated, then passed as an argument
   vector, never assembled into a shell string; values that begin like an option are rejected; names such as snapshots
   and domains come from configuration, not from the caller; length limits; the guest side accepts only schema-valid
   messages and answers with bounded text; the host treats everything from the guest as untrusted (A2).
 - **Verification.** Test (planned): hostile-argument fixtures (option-like, whitespace and newline, shell metacharacters,
-  path traversal, oversize, wrong type) against every verb, expected to be rejected before any process is started, using
+  path traversal, oversize, wrong type) against every verb in the registry (the test enumerates the registry and fails if a verb has no fixtures), expected to be rejected before any process is started, using
   a stub that fails the test if a process is spawned. Test (planned): a guest-message fuzz against the host parser.
 - **Residual.** Parser bugs remain possible; keep the channel small and review it first.
 
@@ -498,6 +527,14 @@ the file the maintainer meant.
     listed the public source and a confidence note (issue #1 mentions them); they are removed here because the recorded
     decision (#2, #4) names three fields. Adding any field is a decision for the maintainer, not an implementation
     detail, and the schema test fails on an extra field.
+  - **Persisted representation.** The check covers everything persisted, not only the response object. The store is one
+    collection of leads whose **only key is the lead's canonical destination** (a record about a lead must name it; this
+    is permitted explicitly and is distinct from the three-field payload) and whose payload is `liveness`, `title` and
+    `category`. There is no other column, key or index (only the primary key on the destination), no parent identifier,
+    no extraction time, no run identifier, no first or last seen value, no seed or eligibility flag, no side table, no
+    sidecar or journal file beyond the storage engine's own, and no discovery fields in the request log beyond the K07
+    log schema. The binding of a candidate to its parent fetch lives only in controller memory for the run and is never
+    persisted.
   - **One hop.** The only input to discovery is a link extracted, in the current run, from a fetch of a destination that
     matched the allowlist. A stored discovery record is never an eligible input: the discovery function accepts a parent
     only if it is allowlist-matched, and a record carries no state that makes it a seed. A probe runs only under the single-use,
@@ -506,7 +543,7 @@ the file the maintainer meant.
   - **Second order.** Fields are normalized, length-capped and stripped of control characters at write time; the log
     format escapes newlines and delimiters; every read path that returns stored strings to the AI uses the K01 envelope
     and says the fields are untrusted; counts and categories are computed by code [I].
-- **Verification.** Planned tests, with the network stubbed: (1) a **graph fixture**: allowlisted page A links to B, and
+- **Verification.** Planned tests, with the network stubbed: (0) a **full-store dump test**: dump the entire backing store (schema introspection including every table, column and index, every file in the state directory, the engine's journal and write-ahead files, and the log) and compare it with the declared representation above; any undeclared column, key, index, auxiliary record, file or seed state fails. (1) a **graph fixture**: allowlisted page A links to B, and
   B links to C. The test asserts exactly one request to B, zero requests to C, and no record for C. (2) A schema test:
   a stored record has exactly the three fields; an extra field fails. (3) A test that a stored record cannot be passed
   to the discovery entry point. (4) A title containing a newline, a fake log line, a fake envelope and control characters
@@ -550,9 +587,14 @@ the file the maintainer meant.
   connects as a dedicated account with rights only on the named Whonix domains (polkit or libvirt access control, [I]), over
   an authenticated, encrypted channel for a remote host; the host is configuration and nothing assumes the maintainer's
   layout (D6). Proxmox has its own API and would be a separate driver; whether libvirt covers it is not verified [I].
-- **Verification.** Checklist the maintainer signs off before first run: which credentials exist on the host, which
-  account runs the VMs, and the output of the access-control listing for that account. Test (planned): the wrapper
-  refuses any domain name not in its configuration.
+- **Verification.** Checklist the maintainer signs off before first run: which credentials exist on the host and which
+  account runs the VMs. **Enforcement-level negative tests, using the actual credential the wrapper holds** (not the
+  wrapper's own checks): attempt, against the hypervisor, an operation on an unconfigured domain, on a network, on a
+  storage pool, on a secret, and a host-level action; each must be **denied by the hypervisor**. Then compare the
+  credential's effective permissions with a closed expected set, which is exactly the hypervisor operations in the Verb
+  registry on the named domains; **startup refuses if the effective permissions are broader**, and the check fails if
+  the controller can issue any hypervisor operation outside that set. Test (planned): the wrapper also refuses any
+  domain name not in its configuration, as a second layer.
 - **Residual.** Virtualization enlarges the trusted computing base [W, Whonix threat-model page, quoted by the wiki].
   This one is the maintainer's decision, not a code fix.
 
@@ -571,36 +613,55 @@ the file the maintainer meant.
   - **Framing.** One length-prefixed frame per fetch. The host reads the fixed-size length first, rejects any length
     above the enforced maximum **before allocating or reading the body**, and reads exactly that many bytes with a
     deadline. Any byte after the frame, a second frame, a short read, or a timeout rejects the result.
-  - **Schema.** The guest-to-host frames are exactly the following, per verb, and nothing else is accepted. The table
-    is normative: the implementation's schema and its tests are generated from it. Unknown, duplicate, missing or
-    wrongly typed fields fail. There is no free-form diagnostic, note or error-text field, because any such field would
-    carry page-derived bytes across the channel.
+  - **Schema.** The guest-to-host frames are exactly the variants below, one per (verb, outcome) combination, and
+    nothing else is accepted. The tables are normative: the implementation's schema and its tests are generated from
+    them. For every variant, the fields listed as required are all present and each appears once; **every field not
+    listed for that variant is forbidden**, and there are no optional fields anywhere. There is no free-form
+    diagnostic, note or error-text field, because any such field would carry page-derived bytes across the channel.
+    Unknown, duplicate, missing, forbidden or wrongly typed fields fail.
 
-    | Verb | Field | Type | Bound | Meaning |
-    |---|---|---|---|---|
-    | all | `v` | unsigned integer | exactly 1 | Schema version |
-    | all | `verb` | enumeration | the verb that was requested | Must equal the host's pending request |
-    | `fetch` | `outcome` | enumeration | `ok`, `refused_type`, `failed` | Guest assertion; `failed` carries no text |
-    | `fetch` | `text` | UTF-8 string | at most the configured output cap, in bytes | Sanitized document text; present only when `outcome` is `ok` |
-    | `fetch` | `text_len` | unsigned integer | at most the cap | Must equal the byte length of `text`; the host measures the actual length and rejects a mismatch |
-    | `fetch` | `guest_truncated` | boolean | | A guest assertion about its own truncation, shown to the AI labeled as such |
-    | `probe` | `liveness` | enumeration | `up`, `down`, `timeout` | Guest assertion |
-    | `probe` | `title` | UTF-8 string | at most 200 bytes after normalization | Normalized as in K08 |
-    | `probe` | `category` | enumeration | the closed list the host defines | Chosen from the host's list; any other value fails |
-    | `revert` | `outcome` | enumeration | `ok`, `failed` | No other field |
+    Field types and bounds:
 
-    The **length prefix** of the frame is authoritative for how many bytes the host reads; `text_len` is checked
-    against it and against the measured string, never trusted alone. **Host-owned, never read from the guest:**
-    destination, network, time, the response byte count (observed at the proxy), the redirect hop count, the error
-    class and its text, the allowlist digest, and the request identifier. Truncation by the **host** (the output cap) is a
-    host observation; `guest_truncated` is a separate guest assertion and the two are never merged. The operator-only
-    `screenshot` verb returns an opaque image to a private operator directory and is not part of the AI-facing channel.
+    | Field | Type | Bound |
+    |---|---|---|
+    | `v` | unsigned integer | exactly 1 |
+    | `verb` | enumeration | must equal the host's pending request; one of the guest-facing verbs in the registry |
+    | `outcome` | enumeration | per variant below |
+    | `text` | UTF-8 string | at most the configured output cap, in bytes |
+    | `text_len` | unsigned integer | at most the cap |
+    | `guest_truncated` | boolean | |
+    | `liveness` | enumeration | `up`, `down`, `timeout` |
+    | `title` | UTF-8 string | at most 200 bytes after normalization |
+    | `category` | enumeration | the closed list the host defines; any other value fails |
+
+    Variants (R = required, all others forbidden):
+
+    | Verb | Outcome (or liveness) | Required fields |
+    |---|---|---|
+    | `fetch` | `outcome = ok` | `v`, `verb`, `outcome`, `text`, `text_len`, `guest_truncated` |
+    | `fetch` | `outcome = refused_type` | `v`, `verb`, `outcome` |
+    | `fetch` | `outcome = failed` | `v`, `verb`, `outcome` |
+    | `probe` | `liveness = up` | `v`, `verb`, `liveness`, `title`, `category` |
+    | `probe` | `liveness = down` | `v`, `verb`, `liveness` |
+    | `probe` | `liveness = timeout` | `v`, `verb`, `liveness` |
+    | `revert` | `outcome = ok` | `v`, `verb`, `outcome` |
+    | `revert` | `outcome = failed` | `v`, `verb`, `outcome` |
+
+    So a failed or refused fetch carries no text, length or truncation flag, and a probe that is down or timed out
+    carries no title or category. **Length checks:** the frame's length prefix is authoritative for how many bytes the
+    host reads and is checked against the total encoded frame length; `text_len` is checked only against the UTF-8 byte
+    length of `text`, never against the frame. **Host-owned, never read from the guest:** destination, network, time,
+    the response byte count (observed at the proxy), the redirect hop count, the error class and its text, the allowlist
+    digest, and the request identifier. Truncation by the **host** (the output cap) is a host observation;
+    `guest_truncated` is a separate guest assertion and the two are never merged. The operator-only `screenshot` verb
+    returns an opaque image to a private operator directory and is not part of the AI-facing channel.
   - **No page-derived output on error.** Any sanitizer failure, crash, timeout, truncation ambiguity or encoding error
     returns a fixed, host-generated error that contains no byte derived from the page (not even a partial title), and
     marks the sandbox poisoned (K12).
-- **Verification.** Planned **schema-generated test**: from the normative table, generate for every verb one test per
-  field for each of absent, duplicated, mistyped and out-of-bound, and one test that adds an extra field with a
-  plausible name (for example a diagnostic or note field); the implementation must reject all of them and must fail the
+- **Verification.** Planned **schema-generated test**: from the normative table, generate for every (verb, outcome) variant a
+  positive case, one case per required field absent, duplicated, mistyped and out-of-bound, one case per **forbidden**
+  field present (for example `text` on a failed fetch, or a title on a probe that is down), and one case that adds an
+  extra field with a plausible name (for example a diagnostic or note field); the implementation must reject all of them and must fail the
   test suite if it accepts any field the table does not list. Planned tests from a **hostile guest stub**, each
   expected to be rejected with the fixed error and no page-derived bytes: a length above the maximum (the test also checks the host did not allocate near that size); a
   length that disagrees with the data; an unterminated frame; trailing bytes; two frames; a duplicate field; an unknown
@@ -748,7 +809,7 @@ consumer's transcript (F5).
 
 - Security claims are repeated in the narrative and in the Threat Dragon file (flow and threat text). A planned check
   holds a short list of claim phrases (for example the lifecycle in K12, the broker capabilities in K04, the closed
-  result schema in K11) and fails if the narrative and the file disagree on them. The GYST checker validates the
+  result schema in K11, the verb registry, and the persisted discovery representation in K08) and fails if the narrative and the file disagree on them. The GYST checker validates the
   file's shape and topics, not that the two documents say the same thing.
 
 - Update this model in the same pull request as any change to a tier, the control verbs, the sanitizer, the log or the
