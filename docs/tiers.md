@@ -190,8 +190,10 @@ to wait): a **Gateway** that runs Tor and a **Workstation**
 that can reach only the Gateway. Under KVM/QEMU/libvirt. Every request runs on a fresh
 disposable disk overlay over an immutable, measured golden image, destroyed afterward. You control it with a
 **closed verb set** on the host, never a shell: reset to a fresh overlay, run one allowed fetch, tear down, take a screenshot (for you only; it is not given to Claude). The
-fetch runs inside the Workstation through a service on a vsock channel, which is not a network connection
-(`docs/design.md` section 11).
+fetch runs inside the Workstation through a service on a vsock channel, which is not an IP network connection;
+vsock works both ways, so the host must run no vsock listener the guest could reach, and the design checks that
+with a listener enumeration and a canary the guest must not be able to connect to (`docs/design.md` 11.2; the
+enforcement is unverified until tested on your host).
 
 **Networks.** Tor onion services: yes. I2P: **not in Phase 1.** `verified (read 2026-11-02)`, Whonix wiki,
 I2P page: Whonix does not install I2P; the preferred way is to run the I2P router inside the Workstation and
@@ -297,3 +299,9 @@ when it returns, so there is no session id to guess, join or end (`docs/design.m
 
 The discovery lane stays disabled. Its claim that a candidate came from the page cannot be proven by a
 breakable fetcher, so it waits for a trusted extractor with its own review (`docs/design.md` section 12).
+
+## Links in results
+
+Phase 1 results contain no link targets: link text appears only as ordinary sanitized text, and addresses are
+never returned. Following links is a Phase 2 matter that waits for a trusted extractor (`docs/design.md` 7.3 and
+section 12).

@@ -61,7 +61,7 @@ Differences, each on purpose:
 | Main mitigations | Default-deny allowlist decided by the controller; a two-part broker outside the sandbox: a protocol stack with no proxy access, and a small egress gate that connects only to what a single-use controller capability names (container tier); no route from the fetcher to Tor or i2pd at all; one canonical path form for authorization and transmission; parsing hostile bytes only inside the sandbox; sanitizer plus output schema with an untrusted marker; caps; ephemeral sessions; request log without bodies. |
 | Residual risk | Sanitized text can still persuade a model (the marker lowers it, nothing removes it); a sandbox escape (in the container tier the broker then holds the line, but a compromise of the egress gate, a proxy or the host defeats the allowlist; in the Whonix tier it does not hold even after only a Workstation compromise, see 11.5); correlation by an observer of both ends (Tor and I2P limit, not ours); a compromised host. Claude must never be given other tools that act on page text without a human step. |
 
-Untrusted data (page text, titles, link labels, error strings derived from pages) is evidence, never an
+Untrusted data (page text, titles, error strings derived from pages) is evidence, never an
 instruction, everywhere in this design.
 
 ## 4. The single interface
@@ -140,8 +140,8 @@ maintainer-only, done outside Claude (section 6, 8).
 
 **Closed everywhere.** Every object at every level has `additionalProperties: false`. Every counter is an
 `integer` with a `minimum` and `maximum`. Every string is either a constant, an enum, a controller-built
-value matching a strict pattern, or one of the explicitly named sanitized content fields (`content.title`,
-`content.text`, `content.links[].label`). **No other string in a response may carry backend- or page-derived
+value matching a strict pattern, or one of the explicitly named sanitized content fields (`content.title` and
+`content.text`). **No other string in a response may carry backend- or page-derived
 text.** There is a separate closed response schema per verb; a response is validated against the schema for
 the verb that was called, and any unknown field, wrong type or out-of-range integer is `internal`.
 
@@ -192,13 +192,6 @@ Shared definitions (all closed):
       "properties": {"hop": {"type": "integer", "minimum": 1, "maximum": 3},
         "outcome": {"enum": ["followed", "denied"]},
         "destination_id": {"$ref": "#/$defs/id"}, "path_sha256_12": {"$ref": "#/$defs/hex12"}}},
-    "link": {"type": "object", "additionalProperties": false, "required": ["label", "target"],
-      "properties": {"label": {"type": "string", "maxLength": 120},
-        "target": {"oneOf": [
-          {"type": "object", "additionalProperties": false, "required": ["destination_id", "path"],
-           "properties": {"destination_id": {"$ref": "#/$defs/id"}, "path": {"type": "string", "maxLength": 1024}}},
-          {"type": "object", "additionalProperties": false, "required": ["offlist"],
-           "properties": {"offlist": {"const": true}}}]}}},
     "fetch_provenance": {"type": "object", "additionalProperties": false,
       "required": ["tier", "network", "destination_id", "path_sha256_12", "fetched_at", "status_code",
                    "content_type", "redirects", "raw_bytes", "raw_sha256", "returned_chars", "truncated",
@@ -237,13 +230,11 @@ and an error variant (the error variant is defined after this block). The succes
     "provenance": {"$ref": "#/$defs/fetch_provenance"},
     "content": {
       "type": "object", "additionalProperties": false,
-      "required": ["boundary", "title", "text", "links", "offlist_link_count", "discovered"],
+      "required": ["boundary", "title", "text", "discovered"],
       "properties": {
         "boundary": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
         "title": {"type": "string", "maxLength": 200},
         "text": {"type": "string", "maxLength": 131072},
-        "links": {"type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/link"}},
-        "offlist_link_count": {"$ref": "#/$defs/count"},
         "discovered": {"type": "array", "maxItems": 0,
           "description": "reserved for Phase 2; lives inside content so any attacker-controlled title is inside the untrusted boundary"}}},
     "error": {"type": "null"}
@@ -310,8 +301,7 @@ the controller's invariant validator before a response is released, and the same
 generated tests: `returned_chars` equals the length of `content.text` and is at most `caps.max_chars`;
 `raw_bytes` is at most `caps.max_raw_bytes`; `truncated` is true only if the text reached the cap;
 `redirects` hops are 1, 2, 3 in order and each outcome but the last is `followed`; `destination_id` is an
-allowlist id and `network` equals that entry's network; `links` length is at most 100; `offlist_link_count`
-is at least the number of `offlist` links; the sanitizer counters sum to no more than the raw length; and the
+allowlist id and `network` equals that entry's network; the sanitizer counters sum to no more than the raw length; and the
 boundary in `content.text`'s wrapper equals `content.boundary`. **Generated negative tests:** take a valid
 success response and, for each field, flip it to every wrong value class (change `ok` to false, add a non-null
 `error`, null the `content`, set a 4xx status, break each relation above) and assert the response validates
@@ -336,9 +326,8 @@ Rules the implementation must keep:
 **Backend result variants (closed, separate).** A fetcher or Whonix guest reply to the controller is exactly one
 of two closed variants, discriminated by a constant tag, each with `additionalProperties: false`:
 
-- `content_result`: `{variant: "content", job_nonce, sanitized content fields (title, text, links with labels
-  and `{destination_id, path}`-or-offlist targets), the integer counters of 7.2, offlist_link_count}`. No other
-  string.
+- `content_result`: `{variant: "content", job_nonce, sanitized content fields (title and text only; no link targets in Phase 1), the integer counters of 7.2,
+  `discovered: []`}`. No other string.
 - `redirect_candidate`: `{variant: "redirect", job_nonce, status (integer 301, 302, 303, 307 or 308), target
   (one string of at most 2,048 bytes)}`. Nothing else, no content, no counters beyond the nonce.
 
@@ -598,7 +587,7 @@ cut cannot split a sequence the rules would have removed.
    are read.
 8. **Flatten to text.** Block elements become line breaks; list items get `- `; table cells are joined with a
    tab and rows with a newline; `pre` keeps its line breaks; `br` is a newline. Anchors contribute their label
-   to the text; their targets go to `links` (7.3).
+   as plain text; **their targets are not emitted anywhere** (7.3).
 9. **Unicode hygiene** (applied after entities are decoded):
    - Remove all characters of general category Cf (format), which includes zero-width space, joiners and
      non-joiners, the bidirectional embedding, override and isolate controls, word joiner, invisible
@@ -625,16 +614,25 @@ cut cannot split a sequence the rules would have removed.
 14. **Boundary strip.** Remove any `<<<KR-DATA` or `<<<END` marker text. The controller adds the real wrapper
     (4.4 rule 3) after this step.
 
-### 7.3 Links
+### 7.3 Links (Phase 1: no link targets in any result)
 
-Each anchor `href` is resolved against the page URL, then run through the allowlist rules 1 to 6 with the same
-code path. A target that passes becomes `{destination_id, path}`; every other target becomes `{offlist: true}`
-and the address is dropped from everything the model sees; `offlist_link_count` counts them. In Phase 1 the
-address is dropped entirely and no candidate variant is accepted; the Phase 2 `candidate_list` variant and
-candidate envelope in section 12 are the only places a retained address may live. The label is passed through steps 9 and 10 and
-cut at 120 characters. At most 100 links are returned. Off-list addresses are deliberately not shown: they
-are the natural payload of an injection ("visit this instead"), and Phase 2 discovery will record them under
-its own gate instead (section 12).
+**Phase 1 omits link targets from the public result entirely.** There is no `links` array, no
+`offlist_link_count`, and no navigational target field of any kind. An anchor's label survives only as ordinary
+sanitized text inside `content.text` (steps 8 to 11 apply to it like any other text); its `href` is read by no
+rule except the refresh and redirect handling of 6.3 rule 7 and is discarded. Reason: a target classified as
+`{destination_id, path}` would have to be derived by a component that holds the allowlist from a raw `href`
+that the controller never receives, so the sandbox, which is breakable, would be asserting controller-owned
+metadata, and the path string would be a free text field in a structural position (a review finding).
+Off-list addresses are also the natural payload of an injection ("visit this instead").
+
+**Reserved, rejected in Phase 1: `link_candidate`.** A future form, built with the trusted extractor of
+section 12 and analogous to `redirect_candidate` (4.4): a bounded internal item `{job_nonce, link_index
+(integer), label (sanitized, 120 characters), target (one bounded raw string)}` consumed only by the
+controller's strict URL parser and matcher, never copied into any output; the controller itself constructs any
+`{destination_id, canonical_path}` it would show, re-authorized by 6.3, and only for a target the trusted
+extractor confirmed. A backend reply carrying it in Phase 1 is rejected whole as `internal`. **Negative test:**
+a backend invents, substitutes or misclassifies a link, adds a `links` field, or puts text in a target-like
+field; every such reply is rejected whole.
 
 ### 7.4 Controller second pass
 
@@ -651,13 +649,13 @@ One JSON object per line (`jsonl`), appended by the controller to `KNIGHT_RIDER_
 `$XDG_STATE_HOME/knight-rider/requests.jsonl`, mode 0600, directory 0700, never inside the repo. Size-rotated
 (10 MiB, keep 5).
 
-Fields: `ts`, `request_id`, `verb`, `tier`, `network`, `destination_id` (or null when denied),
+Fields: `ts`, `request_id`, `verb`, `tier`, `network`, `destination_id_hmac` (a keyed hash of the allowlist id, or null when denied; the literal id is never logged),
 `host_hmac` (so a denied or unknown host can be correlated within this installation without storing it), `path_hmac`,
 `decision` (`allowed`, `denied`), `reason` (the error code), `status_code`, `content_type`, `raw_bytes`,
 `raw_hmac`, `returned_chars`, `truncated`, `redirect_count`, `duration_ms`, `sanitizer_version`,
 `removed` (the counts), `second_pass_changes`, `caps` (effective).
 
-Never logged: page bodies or text, titles, link labels, headers other than the media type, query strings,
+Never logged: page bodies or text, titles, link labels, literal destination ids, headers other than the media type, query strings,
 cookies, the allowlist contents, or full addresses. A log line is written for every request including denials,
 before the backend is called, and a second line for the outcome.
 
@@ -671,8 +669,9 @@ by any verb, never put in the environment of a sandbox, and never shown in a dia
 with each log set** (when the log file rotates), so correlation of one destination across rotated logs is not
 possible and a stolen old log does not match a candidate against a newer key; the old key is deleted with its
 log. A reader of the log alone, or of the log plus a guessed candidate list, cannot confirm any candidate.
-**Test:** hash a known candidate host with the same function without the key (and with a wrong key) and assert
-the result does not appear in the log; assert the key never appears in a log line, a response or a process
+**Test:** hash a known candidate host, a known path and a known `destination_id` with the same function without
+the key (and with a wrong key) and assert the result does not appear in the log; plant a canary descriptive
+`destination_id` and assert that neither allowed nor denied log lines contain the literal id; assert the key never appears in a log line, a response or a process
 environment passed to a container; assert a rotated log's hashes do not match the new key.
 
 **No full-host mode in the core.** The earlier `log_full_host` switch is removed from the core design. If the
@@ -1299,8 +1298,24 @@ attribute defaults to virtio ... the optional attribute address of the cid eleme
 to the guest. If the attribute auto is set to yes, libvirt will assign a free CID automatically ... Since
 4.4.0"; example `<vsock model='virtio'><cid auto='no' address='3'/></vsock>`. The wrapper connects from the
 host to the guest CID and port, sends one permit, and reads one JSON reply under the framing discipline of 9.2 (a frame of at most 256 KiB, a bounded length prefix, incremental bounded decoding, read and total deadlines, close on the first excess byte). A vsock channel is not a network
-interface, so it does not give the Workstation a route (`inferred`: from vsock being a host-guest socket
-family; confirm the Whonix Workstation's firewall does not interfere). The guest service reuses the same
+interface, so it does not give the Workstation an IP route (`inferred`: from vsock being a host-guest socket
+family; confirm the Whonix Workstation's firewall does not interfere). **But vsock is bidirectional, so "not an
+IP route" is not enough.** The reverse-channel invariant is:
+
+> **The host exposes no `AF_VSOCK` listener reachable from the guest.** The wrapper always initiates the
+> connection (host to guest CID and port); no process on the host binds an `AF_VSOCK` socket for the guest to
+> connect to, so a guest-originated connection to the host finds nothing listening.
+
+The enforcement primitive is the absence of any host-side vsock listener, which holds because the wrapper only
+connects outward, plus a ban in the install guide on running any other vsock service on that host (for
+example other guest-integration daemons). It is `unverified` until tested on the selected KVM and libvirt host:
+how the host kernel routes a guest-originated vsock connection to host listeners, and whether libvirt or QEMU
+offers a finer filter, were not read. **Tests:** (a) **host-side listener enumeration**: at start and in the
+acceptance run, list every `AF_VSOCK` listener on the host (the kernel's socket tables) and assert the set is
+empty; (b) a **guest-originated negative reachability test**: bind a canary `AF_VSOCK` listener on the host,
+boot a disposable Workstation and run a benign probe that tries to connect to the host's CID across a bounded
+port range, and assert that the canary receives no connection; the wrapper refuses to run if the canary is
+reachable (it powers the domains off). The probe is run only on a disposable host with the maintainer's go. The guest service reuses the same
 worker logic as section 9.6 (same code, same sanitizer, but with no broker; see 11.5), but reaches Tor through the Gateway. The Gateway's address
 and SOCKS port are taken from the Whonix defaults and set in the guest service config (`inferred`: Whonix
 documents the Workstation's Tor access as through the Gateway; read the Whonix documentation for the exact
@@ -1446,7 +1461,7 @@ to change when it arrives. The maintainer's approved record is exactly **livenes
   string that came from a page appears outside `content` (checked by a canary string planted in a fixture page
   and searched for in every field outside `content`, in every verb's response).
 - **One hop, defined.** A candidate may originate **only from a link found in the current response of an
-  allowlisted fetch** (a link that `links[]` reports as off-list for that response, 7.3). A candidate has no
+  allowlisted fetch** (a link in that response's body that the trusted extractor of this section confirms; Phase 1 reports no link targets at all, 7.3). A candidate has no
   other source: not another candidate, not a stored record, not a redirect target, not a model-supplied URL.
 - **Discovery records are never fetchable or expandable.** No verb accepts a discovery record or its address
   as a fetch target, and no link found while recording a candidate creates another candidate. The only way a
@@ -1478,9 +1493,8 @@ to change when it arrives. The maintainer's approved record is exactly **livenes
   controller's strict URL parser; never copied into a model-facing response, a log line, an error message or a
   diagnostic; held in controller memory for the run and erased; usable only to mint the single-use liveness
   capability; **never accepted for an ordinary fetch capability**, and **never accepted from a response produced
-  by a discovery check** (the controller does not request candidates from those). A candidate must match a link
-  in the same response's sanitizer link list by `link_index` and be off-list, else it is dropped (a
-  consistency check; provenance is established only by the trusted extractor above). This is a
+  by a discovery check** (the controller does not request candidates from those). A candidate must carry a `link_index` that the trusted extractor above confirms for that response's body,
+  else it is dropped (the sandbox-reported index alone is a consistency check, not proof). This is a
   second, named exception to "no backend string outside sanitized content" (the first is the redirect target);
   the schema walk test asserts exactly these two.
   **End-to-end test (when built):** fixture page with one off-list link; assert exactly one internal candidate
@@ -1489,8 +1503,7 @@ to change when it arrives. The maintainer's approved record is exactly **livenes
 - **Where the candidate lives (reserved internal envelope, never model-facing).** Phase 2 needs the address
   to check liveness, so the contract reserves a closed, **internal-only** `candidate` envelope held in
   **controller memory for the run only**: `{request_id (the authorized fetch it came from), response_nonce (that
-  response's job nonce), canonical_target (the candidate as parsed by the controller's strict URL parser from the `candidate_list` target for a link in that response), extraction_proof (the index of the link in that response's sanitizer link list and the
-  response's raw digest), capability (single-use, non-fetchable: it permits one liveness check and nothing
+  response's job nonce), canonical_target (the candidate as parsed by the controller's strict URL parser from the `candidate_list` target for a link in that response), extraction_proof (the link index and the response's raw digest, confirmed by the trusted extractor), capability (single-use, non-fetchable: it permits one liveness check and nothing
   else, and is not a fetch capability of 9.2)}`. It: never enters a model-facing response or a log; cannot be
   supplied or influenced by the model (no verb takes it); expires when its transaction or run ends and is
   erased then; cannot be created from a discovery check's own response (the controller refuses to extract
@@ -1504,8 +1517,8 @@ to change when it arrives. The maintainer's approved record is exactly **livenes
   case; feed a record with an extra field and assert it is rejected.
 - Full-text fetch, caps, abuse filter, stop-and-report rule and purge procedure are defined in #4 and are not
   designed here.
-- **Phase 1 behavior that supports it:** `links[].target.offlist` already counts off-list links without
-  keeping their addresses (7.3); Phase 2 decides whether to record them.
+- **Phase 1 behavior that supports it:** Phase 1 reports no link targets and keeps no addresses (7.3); the
+  reserved `link_candidate` and `candidate_list` forms are rejected until the trusted extractor exists.
 
 ## 13. Resource caps, summarized
 
@@ -1514,7 +1527,6 @@ to change when it arrives. The maintainer's approved record is exactly **livenes
 | Compressed and decompressed response bytes | 1 MiB each | 4 MiB each | broker or local gate while streaming; sanitizer backstop |
 | Time per request | 60 s (i2p 120 s) | 180 s | broker or local gate (total deadline); controller |
 | Returned text | 32,768 chars | 131,072 | sanitizer, controller |
-| Links returned | 100 | 100 | sanitizer |
 | Redirect hops | 3 | 3 | controller |
 | Request URL length | 2,048 | 2,048 | controller |
 | Concurrent transactions | container 2; Whonix 1 | 4 | controller |
