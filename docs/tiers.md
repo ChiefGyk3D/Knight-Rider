@@ -151,7 +151,7 @@ UDP SOCKS5 proxy option for SSU2; `inferred`: Tor provides no UDP SOCKS proxy, f
 - No browser means no JavaScript, no rendering, no fingerprint surface, no plugin or add-on path (design,
   section 9.4).
 - Hostile bytes are parsed inside the fetcher container, not on your host.
-- A fresh working directory per session, per-session Tor circuit isolation, no cookies or cache kept.
+- A fresh working directory per request, per-request Tor circuit isolation, no cookies or cache kept.
 
 **What it does not protect.**
 
@@ -185,11 +185,11 @@ boundary to be a hypervisor and are willing to run a dedicated host.
 
 ## Tier 3: Whonix Gateway and Workstation under KVM
 
-**What it is.** Two virtual machines from the Whonix project (one session at a time; a second request is told
+**What it is.** Two virtual machines from the Whonix project (one request at a time; a second request is told
 to wait): a **Gateway** that runs Tor and a **Workstation**
-that can reach only the Gateway. Under KVM/QEMU/libvirt. The Workstation is reverted to a clean snapshot
-before and after each session. You control it with a **closed verb set** on the host, never a shell: revert to
-the clean snapshot, run one allowed fetch, take a screenshot (for you only; it is not given to Claude). The
+that can reach only the Gateway. Under KVM/QEMU/libvirt. Every request runs on a fresh
+disposable disk overlay over an immutable, measured golden image, destroyed afterward. You control it with a
+**closed verb set** on the host, never a shell: reset to a fresh overlay, run one allowed fetch, tear down, take a screenshot (for you only; it is not given to Claude). The
 fetch runs inside the Workstation through a service on a vsock channel, which is not a network connection
 (`docs/design.md` section 11).
 
@@ -205,7 +205,7 @@ minutes to stabilize. So an I2P option on this tier is a later, experimental fla
 "Only connections through Tor are permitted", "DNS leaks are impossible", and malware with root in the
 Workstation "cannot discover the user's real IP address" (`wiki`, citing the Whonix overview, modified
 2026-09-19). This addresses the wiki's second and third threats (an app that ignores Tor; a bug that exposes the
-real address) in a way the browser-only model does not. Add to that the snapshot revert of the Workstation (and the Gateway at session start), so what a hostile
+real address) in a way the browser-only model does not. Add to that the fresh overlays for both VMs (destroyed after every request), so what a hostile
 page does inside the VMs does not persist, and the no-open-shell control wrapper.
 
 **What it does not protect.**
@@ -215,13 +215,13 @@ page does inside the VMs does not persist, and the no-open-shell control wrapper
   own, so the code that fetches and parses is also in a position to send any request. The container tier puts a
   broker in between; this tier does not (`docs/design.md` 11.5; whether a Whonix broker is possible is
   unverified). What this tier still gives is the strongest guarantee here about your real address (the
-  project's claim, untested), a Workstation reset to a clean snapshot, a closed verb set with no shell, and
+  project's claim, untested), a Workstation started fresh from a measured golden image every request, a closed verb set with no shell, and
   parsing away from your host. If you want the allowlist enforced against a taken-over fetcher, pick Tier 2.
-- **The Gateway is reverted too, but the host is not.** The Workstation revert does not reset the Gateway, and
-  the Workstation can reach it. So the control wrapper stops and reverts **both** VMs at the end of every
-  session and on every failure path, before it lets go of its lock, and marks both dirty if it crashes (they are
+- **The Gateway is reset too, but the host is not.** Resetting the Workstation does not by itself reset the
+  Gateway, and the Workstation can reach it. So the control wrapper powers off **both** VMs and destroys both
+  overlays at the end of every request and on every failure path, before it lets go of its lock, and marks both dirty if it crashes (they are
   contained before it serves anything again). The images are rebuilt from the Whonix project's on a schedule,
-  and the clean state is an immutable, host-measured golden disk chain; every session runs on a fresh disposable overlay that is destroyed afterward, and a changed golden chain refuses to start (`docs/design.md`
+  and the clean state is an immutable, host-measured golden disk chain; every request runs on a fresh disposable overlay that is destroyed afterward, and a changed golden chain refuses to start (`docs/design.md`
   11.1 and 11.6). Anything outside
   the two VMs' disks (host, hypervisor, libvirt) is not reset by this.
 - **The host.** Whonix's Warning page, per the wiki: the platform's security "is itself reliant upon the
@@ -248,12 +248,12 @@ page does inside the VMs does not persist, and the no-open-shell control wrapper
 - **The always-on Ubuntu box** (quad-core Xeon, 32 GB, per #2): double duty. Mind the host-risk note above.
 - **An on-demand VM on a Proxmox cluster** (planned): Proxmox has its own API and would be a separate driver.
   Whether libvirt can drive it is `unverified`; it is not claimed.
-- Libvirt covers local and remote KVM hosts (`verified (read 2026-11-02)`: the virsh manual's `snapshot-revert`
-  and `screenshot` commands; the remote transport is a design choice, not a libvirt claim). The control wrapper
+- Libvirt covers local and remote KVM hosts (`verified (read 2026-11-02)`: the virsh manual's `screenshot`
+  command; the remote transport is a design choice, not a libvirt claim). The control wrapper
   takes the host as configuration, so nothing assumes the maintainer's layout.
 
 **Cost.** Highest of the three. A host that can run two VMs under KVM, Whonix's qcow2 images (use the ones the
-project provides, per its KVM page), a clean snapshot, a small guest service and a host wrapper, plus
+project provides, per its KVM page), an immutable golden image, a small guest service and a host wrapper, plus
 upkeep: updating the Gateway, Workstation and host. The Whonix project says safety "is materially improved by
 using a dedicated host operating system solely for Whonix VMs" (`wiki`).
 
@@ -271,12 +271,11 @@ supported route.
 ## What is verified and what is not
 
 Added after the security review of PR #11 (no new external facts were read for these changes): the broker,
-the unavailable status of Tier 1, the one-session rule for Tier 3 and the plain statement about the
+the unavailable status of Tier 1, the one-request rule for Tier 3 and the plain statement about the
 allowlist and Workstation compromise are design decisions, not sourced claims.
 
 Verified today (2026-11-02): the Docker Compose descriptions of `internal` and the container options; the
-i2pd and tor(1) option names and defaults quoted in `docs/design.md`; the virsh `snapshot-revert` and
-`screenshot` syntax and the libvirt vsock device; the Whonix I2P page content; the Whonix KVM page's warnings
+i2pd and tor(1) option names and defaults quoted in `docs/design.md`; the virsh `screenshot` syntax and the libvirt vsock device; the Whonix I2P page content; the Whonix KVM page's warnings
 (first 100,000 characters only); the tbselenium README; the absence of an automation page on the Tor Browser
 support index.
 
@@ -289,7 +288,12 @@ names for turning off scripts, images and downloads; the Whonix Gateway address 
 whether the I2P project accepts a client-only router with transit off; any figure for setup time or speed.
 `docs/design.md` section 16 lists these as open questions.
 
-## Sessions
+## Requests and sessions
 
-A session id is generated by the tool and cannot be chosen by the caller. An id the tool did not issue is
-refused, and one caller cannot join or end another caller's session (`docs/design.md` 4.3 and 8.2).
+Phase 1 has no resumable sessions. Each lookup is one self-contained request with its own fresh instance, wiped
+when it returns, so there is no session id to guess, join or end (`docs/design.md` 4.3 and 8.2).
+
+## Discovery
+
+The discovery lane stays disabled. Its claim that a candidate came from the page cannot be proven by a
+breakable fetcher, so it waits for a trusted extractor with its own review (`docs/design.md` section 12).

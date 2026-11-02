@@ -83,14 +83,13 @@ install guide.
 
 ### 4.2 Verbs
 
-Four tool verbs. None takes a shell string, a header, a method or a body. Every call returns the envelope in
+Three tool verbs. None takes a shell string, a header, a method or a body. Every call returns the envelope in
 4.4.
 
 | Verb | Purpose |
 |---|---|
 | `kr_fetch` | Fetch one allowlisted page and return sanitized text. |
 | `kr_destinations` | List the allowlist as ids, networks, notes and tags (not raw addresses, see 4.5). |
-| `kr_session_end` | End a session and wipe its state now. |
 | `kr_status` | Report tier, which networks are reachable, readiness and effective caps. |
 
 No verb writes the allowlist, changes caps, reads the log, or returns files or images. Those are
@@ -103,12 +102,14 @@ maintainer-only, done outside Claude (section 6, 8).
   "$id": "knight-rider/fetch-request/1",
   "type": "object",
   "additionalProperties": false,
-  "oneOf": [{"required": ["url"]}, {"required": ["destination_id", "path"]}],
+  "oneOf": [
+    {"required": ["url"], "not": {"anyOf": [{"required": ["destination_id"]}, {"required": ["path"]}]}},
+    {"required": ["destination_id", "path"], "not": {"required": ["url"]}}
+  ],
   "properties": {
     "url": {"type": "string", "maxLength": 2048},
     "destination_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"},
     "path": {"type": "string", "maxLength": 1024, "pattern": "^/"},
-    "session_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{43}$"},
     "max_chars": {"type": "integer", "minimum": 256, "maximum": 131072},
     "timeout_s": {"type": "integer", "minimum": 5, "maximum": 180},
     "discovery": {"const": false}
@@ -116,20 +117,24 @@ maintainer-only, done outside Claude (section 6, 8).
 }
 ```
 
-- `url` or (`destination_id` + `path`): exactly one form. The id form lets Claude refer to a destination
+- `url` or (`destination_id` + `path`): exactly one form, enforced by the schema: the `url` branch forbids
+  `destination_id` and `path`, and the id branch forbids `url`, so `url` plus `destination_id` without `path`,
+  or `url` plus `path` without `destination_id`, is invalid (it is not left to `additionalProperties`). A test
+  tries every subset of the three fields and accepts only `{url}` and `{destination_id, path}`. The id form lets Claude refer to a destination
   without the address entering the conversation (4.5). Query strings are allowed only if the entry says so
   (6.2).
-- `session_id` is optional. **It is never chosen by the caller.** Omitted means a one-request session wiped on
-  return. To keep a session across requests, the first response returns a controller-generated `session_id`
-  (256 random bits from the OS source, base64url, 43 characters) and later requests present it. A supplied id
-  the controller did not issue returns `session_unknown`; it never creates a session (section 8.2).
+- **There is no `session_id` and no resumable session in Phase 1.** Every `kr_fetch` call is one
+  **transaction** (the request plus its authorized redirect hops, at most 3) with its own fresh instance and its
+  own isolation key, wiped when the call returns, whether it succeeded or failed. Nothing carries over between
+  calls, so there is nothing for a caller to join, guess, resume or end, and no `kr_session_end` verb. A request
+  that carries a `session_id` is rejected by `additionalProperties: false`. Resumable sessions, if ever wanted,
+  are a new design with owner binding and controller-issued ids (a deferred item, not Phase 1).
 - `max_chars` and `timeout_s` can only lower the configured caps, never raise them. A request above a cap is
   clamped, and the clamp is reported in `provenance.caps`.
 - `discovery` is reserved for Phase 2 (section 12). Only `false` is accepted; anything else returns
   `not_implemented`.
 
-`kr_destinations` takes `{"network": "tor"|"i2p"|null, "tag": string|null}`. `kr_session_end` takes
-`{"session_id": string}`. `kr_status` takes `{}`. All with `additionalProperties: false`.
+`kr_destinations` takes `{"network": "tor"|"i2p"|null, "tag": string|null}`. `kr_status` takes `{}`. All with `additionalProperties: false`.
 
 ### 4.4 Output schemas
 
@@ -159,8 +164,8 @@ Shared definitions (all closed):
     "error_code": {"enum": [
       "denied_not_allowlisted", "denied_scheme", "denied_redirect_offlist", "denied_malformed_url",
       "allowlist_unavailable", "not_implemented", "unsupported_content_type", "too_large",
-      "timeout", "network_unreachable", "tier_unavailable", "session_unknown", "busy",
-      "sanitizer_failed", "internal"]},
+      "timeout", "network_unreachable", "tier_unavailable", "busy",
+      "sanitizer_failed", "http_error", "internal"]},
     "error": {"type": "object", "additionalProperties": false, "required": ["code", "message"],
       "properties": {"code": {"$ref": "#/$defs/error_code"},
         "message": {"type": "string", "enum": ["<fixed controller strings, one per code>"]}}},
@@ -203,8 +208,8 @@ Shared definitions (all closed):
         "network": {"enum": ["tor", "i2p"]},
         "destination_id": {"$ref": "#/$defs/id"}, "path_sha256_12": {"$ref": "#/$defs/hex12"},
         "fetched_at": {"type": "string", "format": "date-time"},
-        "status_code": {"type": ["integer", "null"], "minimum": 100, "maximum": 599},
-        "content_type": {"enum": ["text/html", "application/xhtml+xml", "text/plain", null]},
+        "status_code": {"type": "integer", "minimum": 200, "maximum": 299},
+        "content_type": {"enum": ["text/html", "application/xhtml+xml", "text/plain"]},
         "redirects": {"type": "array", "maxItems": 3, "items": {"$ref": "#/$defs/redirect"}},
         "raw_bytes": {"$ref": "#/$defs/count"}, "raw_sha256": {"$ref": "#/$defs/hex64"},
         "returned_chars": {"$ref": "#/$defs/count"}, "truncated": {"type": "boolean"},
@@ -221,17 +226,16 @@ and an error variant (the error variant is defined after this block). The succes
 ```json
 {
   "type": "object", "additionalProperties": false,
-  "required": ["schema", "untrusted", "marker", "ok", "request_id", "session_id", "provenance",
+  "required": ["schema", "untrusted", "marker", "ok", "request_id", "provenance",
                "content", "error"],
   "properties": {
     "schema": {"const": "knight-rider/1"},
     "untrusted": {"const": true},
     "marker": {"$ref": "#/$defs/marker"},
-    "ok": {"type": "boolean"},
+    "ok": {"const": true},
     "request_id": {"$ref": "#/$defs/token"},
-    "session_id": {"oneOf": [{"$ref": "#/$defs/token"}, {"type": "null"}]},
     "provenance": {"$ref": "#/$defs/fetch_provenance"},
-    "content": {"oneOf": [{"type": "null"}, {
+    "content": {
       "type": "object", "additionalProperties": false,
       "required": ["boundary", "title", "text", "links", "offlist_link_count", "discovered"],
       "properties": {
@@ -241,14 +245,14 @@ and an error variant (the error variant is defined after this block). The succes
         "links": {"type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/link"}},
         "offlist_link_count": {"$ref": "#/$defs/count"},
         "discovered": {"type": "array", "maxItems": 0,
-          "description": "reserved for Phase 2; lives inside content so any attacker-controlled title is inside the untrusted boundary"}}}]},
-    "error": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/error"}]}
+          "description": "reserved for Phase 2; lives inside content so any attacker-controlled title is inside the untrusted boundary"}}},
+    "error": {"type": "null"}
   }
 }
 ```
 
 **Error variant of the `kr_fetch` response** (`fetch_error`). An error can occur before any destination, body,
-digest or sanitizer exists (malformed URL, allowlist unavailable, unknown session, tier unavailable, busy,
+digest or sanitizer exists (malformed URL, allowlist unavailable, tier unavailable, busy,
 `not_implemented`), during transport (`timeout`, `too_large`, `network_unreachable`) or after a fetch
 (`sanitizer_failed`, `unsupported_content_type`). So the error variant carries only what the controller really
 knows, and never invents provenance:
@@ -256,12 +260,11 @@ knows, and never invents provenance:
 ```json
 {
   "type": "object", "additionalProperties": false,
-  "required": ["schema", "untrusted", "marker", "ok", "request_id", "session_id", "provenance", "content", "error"],
+  "required": ["schema", "untrusted", "marker", "ok", "request_id", "provenance", "content", "error"],
   "properties": {
     "schema": {"const": "knight-rider/1"}, "untrusted": {"const": true}, "marker": {"$ref": "#/$defs/marker"},
     "ok": {"const": false},
     "request_id": {"$ref": "#/$defs/token"},
-    "session_id": {"oneOf": [{"$ref": "#/$defs/token"}, {"type": "null"}]},
     "provenance": {"type": "object", "additionalProperties": false,
       "required": ["fetched_at", "stage"],
       "properties": {
@@ -292,13 +295,28 @@ The allowlist `note` is the maintainer's own free text and is **not** returned. 
 `label` (`^[a-z0-9-]{1,40}$`, in the allowlist file) and only that slug is returned, so a response holds no
 free-form string from a file or a page. If the maintainer wants notes shown, that is a later, explicit change.
 
-**`kr_session_end` response** (`.../response/session_end/1`): envelope fields, `request_id`,
-`provenance: {tier, fetched_at}`, `data: {"ended": boolean}`, `error`.
-
 **`kr_status` response** (`.../response/status/1`): envelope fields, `request_id`,
 `provenance: {fetched_at}`, `data: {"tiers": [{"tier": enum, "available": boolean, "networks": enum array,
-"ready": boolean, "sessions_active": count}], "caps": caps}`, `error`. The `container`, `whonix` and
+"ready": boolean, "transactions_active": count}], "caps": caps}`, `error`. The `container`, `whonix` and
 `tor-browser` entries report availability honestly; `tor-browser` is always `available: false` in Phase 1.
+
+**Success invariants, enforced twice.** The success variant admits only a real success: `ok` is the constant
+`true`, `content` is a required object (never null), `error` is the constant `null`, `status_code` is a 2xx
+integer, `content_type` is one of the three accepted media types, every counter is an integer in range, and
+`discovered` is an empty array. A final HTTP status outside 200 to 299 is not a success: it is the error
+`http_error` (error variant, with `status_code` in the error provenance). A fetch that ends at a denied
+redirect or any other failure is likewise an error. The relations a JSON Schema cannot express are enforced by
+the controller's invariant validator before a response is released, and the same validator is exercised by
+generated tests: `returned_chars` equals the length of `content.text` and is at most `caps.max_chars`;
+`raw_bytes` is at most `caps.max_raw_bytes`; `truncated` is true only if the text reached the cap;
+`redirects` hops are 1, 2, 3 in order and each outcome but the last is `followed`; `destination_id` is an
+allowlist id and `network` equals that entry's network; `links` length is at most 100; `offlist_link_count`
+is at least the number of `offlist` links; the sanitizer counters sum to no more than the raw length; and the
+boundary in `content.text`'s wrapper equals `content.boundary`. **Generated negative tests:** take a valid
+success response and, for each field, flip it to every wrong value class (change `ok` to false, add a non-null
+`error`, null the `content`, set a 4xx status, break each relation above) and assert the response validates
+against neither variant and is replaced by a fixed `internal` error; run the cross-product of `ok`, `content`
+and `error` being present, null or wrong, and of provenance shapes (full, error-shaped, mixed).
 
 Rules the implementation must keep:
 
@@ -347,7 +365,7 @@ allowlist file. Open question 8 asks whether Claude ever needs the host.
 
 ```
  Claude --MCP stdio--> controller (host, unprivileged, no network)
-                          |  allowlist check, caps, log, session table, schema check
+                          |  allowlist check, caps, log, transaction table, schema check
                           |  per-request CAPABILITY (single use) to the broker
                           v
         tier backend:  container (+ broker) | whonix wrapper | tor-browser driver (unavailable)
@@ -361,10 +379,10 @@ allowlist file. Open question 8 asks whether Claude ever needs the host.
   (the maintainer's other repos use it and GYST `python-ci` fits); the standard library plus a small pinned set
   of dependencies.
 - **Backend interface** (`knight_rider.backends.Backend`):
-  `fetch(permit) -> RawResult | BackendError`, `end_session(session_id)`, `status()`. A `RawResult` is the
+  `fetch(permit) -> RawResult | BackendError`, `abort(request_id)`, `status()`. A `RawResult` is the
   sandbox's own JSON (section 7.3), already sanitized inside the sandbox. All three tiers implement it, which
   is what makes it "one interface, three backends".
-- **Permit / capability**: the controller's authorized request in canonical form `{request_id, session_id,
+- **Permit / capability**: the controller's authorized request in canonical form `{request_id,
   scheme, host, port, canonical path, canonical query, network, max_compressed_bytes, max_decompressed_bytes,
   max_chars, deadline}`. In the container tier it is registered with the broker as a single-use capability (9.2)
   and the fetcher receives only a token. Nothing in the sandbox sees the allowlist file.
@@ -494,7 +512,7 @@ transmitted request line (section 15).
    weakening the generic rule.) No component follows a redirect. The broker returns the status and raw
    `Location` value; the sanitizer extracts any HTML refresh directive (7.2 step 4a) and reports it as a redirect
    candidate. The controller runs every candidate through rules 1 to 6 as a fresh request, with a fresh
-   capability, and follows it only if it passes: at most 3 hops, same session, total time and byte caps shared
+   capability, and follows it only if it passes: at most 3 hops, same transaction, total time and byte caps shared
    across hops. A failing target is `denied_redirect_offlist`, recorded in `provenance.redirects` as
    `{"outcome": "denied"}` without the address. A page with more than one refresh directive, or a malformed
    one, is `sanitizer_failed` (fail closed). Browser-style automatic refresh is never honored by anything but
@@ -633,7 +651,7 @@ One JSON object per line (`jsonl`), appended by the controller to `KNIGHT_RIDER_
 `$XDG_STATE_HOME/knight-rider/requests.jsonl`, mode 0600, directory 0700, never inside the repo. Size-rotated
 (10 MiB, keep 5).
 
-Fields: `ts`, `request_id`, `session_hmac` (a keyed hash, never the id), `verb`, `tier`, `network`, `destination_id` (or null when denied),
+Fields: `ts`, `request_id`, `verb`, `tier`, `network`, `destination_id` (or null when denied),
 `host_hmac` (so a denied or unknown host can be correlated within this installation without storing it), `path_hmac`,
 `decision` (`allowed`, `denied`), `reason` (the error code), `status_code`, `content_type`, `raw_bytes`,
 `raw_hmac`, `returned_chars`, `truncated`, `redirect_count`, `duration_ms`, `sanitizer_version`,
@@ -663,36 +681,31 @@ reach with conspicuous retention controls (a named output file, deleted after us
 the running service. What it would disclose is the full list of destinations contacted and denied, which is
 exactly the private allowlist plus whatever a model asked for.
 
-### 8.2 Ephemeral session semantics
+### 8.2 Ephemeral transaction semantics
 
-A **session** is a set of requests that share state: one Tor circuit isolation key (container tier), one
-browser profile or one VM boot (other tiers).
+Phase 1 has **no resumable sessions**. A **transaction** is one `kr_fetch` call: its request plus its authorized
+redirect hops (at most 3). Each transaction gets a fresh instance and its own isolation key, and everything it
+created is wiped when the call returns. Where this document says "session" in a tier-specific section (for
+example the Whonix lock and teardown), it means one transaction.
 
-- **Created only by the controller.** A request without a `session_id` creates a session (a one-request session
-  unless the response's returned `session_id` is presented again); a request naming an id the controller did not
-  issue is refused with `session_unknown`, never joined and never created. Each session is **bound to its owner**,
-  the MCP connection (and process identity) that made the creating request; a request or a `kr_session_end` from
-  any other connection with that id is refused as `session_unknown`, so one caller cannot join, use or end
-  another's session, and ids are unguessable. Ids appear in the model's context only for the owner and are
-  never logged in the clear (8.1 keys them). Ends on `kr_session_end`, on idle timeout (default 300 s), on a hard lifetime limit
-  (default 1800 s), on any `sanitizer_failed`, and on controller shutdown.
-- **Container tier:** each session gets a fresh worker process in the fetcher with a fresh tmpfs working
-  directory (64 MiB, `noexec,nosuid`) and a SOCKS username derived from the session id so Tor puts it on its own
-  circuit (Tor's `IsolateSOCKSAuth`, `verified (read 2026-11-02)` in the tor(1) manual, Debian unstable, tor
-  0.4.9.15). End of session: kill the worker, remove the directory, drop the SOCKS credentials. No cookies, no
-  cache, no storage persist between sessions; within a session the fetcher does not store cookies either
-  (it sends none and ignores `Set-Cookie`).
-- **Whonix tier:** the Workstation is reverted to the clean snapshot at session start and again at session end
-  (section 11). What a page does inside the Workstation does not survive the revert. **The Gateway is not
-  reverted by that**, so state held in the Gateway is not covered by this claim; see 11.5 for how the Gateway
-  is restored.
-- **Tor Browser tier:** a new temporary profile directory per session, deleted at the end. Weakest guarantee;
-  see `docs/tiers.md`.
-- A session never survives a controller restart. The session table is in memory only.
-- Concurrency: 1 active fetch per session. Container tier: 2 sessions at once by default (each has its own
-  worker, work directory and SOCKS isolation key). **Whonix tier: 1 session at a time**, because one
-  Workstation cannot be reverted under another session's fetch; more only if each session owns distinct VMs
-  (11.1).
+- Ends when the call returns, on its total deadline (the request's `timeout_s`, hard maximum 180 s), on any
+  `sanitizer_failed` or other error, and on controller shutdown. There is no idle timeout or lifetime beyond the
+  deadline, because nothing waits for a next request. The transaction table is in memory only; none survives a
+  controller restart.
+- **Container tier:** each transaction gets a fresh worker process in the fetcher with a fresh tmpfs working
+  directory (64 MiB, `noexec,nosuid`) and a SOCKS username derived from a per-transaction random key so Tor puts
+  it on its own circuit (Tor's `IsolateSOCKSAuth`, `verified (read 2026-11-02)` in the tor(1) manual, Debian
+  unstable, tor 0.4.9.15). End of transaction: kill the worker, remove the directory, drop the SOCKS credentials.
+  No cookies, no cache, no storage persist between transactions or inside one (the fetcher sends no cookies and
+  ignores `Set-Cookie`).
+- **Whonix tier:** each transaction runs on a fresh disposable overlay over the immutable golden chain, for both
+  the Workstation and the Gateway, destroyed at the end (11.1, 11.6). What a page does inside the VMs does not
+  survive. Redirect hops of one transaction share that instance.
+- **Tor Browser tier (unavailable in Phase 1):** a new temporary profile directory per transaction, deleted at
+  the end. Weakest guarantee; see `docs/tiers.md`.
+- Concurrency: container tier, 2 transactions at once by default (each has its own worker, work directory and
+  isolation key). **Whonix tier: 1 transaction at a time**, because one Workstation and Gateway pair cannot be
+  reset under another transaction's fetch; more only if each transaction owns distinct VMs (11.1).
 
 ## 9. Container tier (build first)
 
@@ -774,7 +787,7 @@ connection with no body.
 **Capability.** For each request (and each redirect hop) the controller, after authorizing it, registers
 with `broker-egress`, over the control socket, one capability:
 
-`{token, session_key, scheme, host, port, request_head (http entries: the canonical GET request head bytes),
+`{token, isolation_key, scheme, host, port, request_head (http entries: the canonical GET request head bytes),
 canonical_path_and_query, network, max_compressed_bytes, max_decompressed_bytes, max_header_bytes,
 deadline_ms, expires_at, uses: 1}`
 
@@ -784,7 +797,7 @@ on first presentation, whichever is first. `broker-egress` keeps capabilities in
 **Fetcher request.** The fetcher connects to `broker-front` and sends only `{token}`. It names no host and no
 path. `broker-front` hands the token to `broker-egress` over their socket. `broker-egress` looks it up, deletes
 it, opens the connection through Tor (SOCKS5 with remote hostname resolution, username derived from
-`session_key` for circuit isolation) for `.onion`, or through the i2pd HTTP proxy for `.i2p`. It never
+`isolation_key` for circuit isolation) for `.onion`, or through the i2pd HTTP proxy for `.i2p`. It never
 resolves the host.
 
 **Binding the proxy-level destination to the capability.** Reaching the permitted proxy listener is not the
@@ -880,7 +893,7 @@ code.
 header, cannot reuse a token, cannot reach any proxy, and cannot reach the host or LAN.
 
 **Why the controller is not the broker.** The controller holds the allowlist and runs on the host with the
-maintainer's session. Network-facing and parsing components do not run there.
+maintainer's login session. Network-facing and parsing components do not run there.
 
 ### 9.3 Container specification
 
@@ -927,7 +940,7 @@ DataDirectory /var/lib/tor    # tmpfs
 `SafeSocks`, `AvoidDiskWrites`, `Sandbox` is documented in the tor(1) manual, Debian unstable (tor
 0.4.9.15). The manual's `SafeSocks` text says it rejects SOCKS requests that only provide an IP address (the
 application resolved DNS first). `inferred`: whether `Sandbox 1` works inside the chosen base image; test and
-drop only with a recorded reason. No control port means no `NEWNYM`: fresh circuits come from per-session
+drop only with a recorded reason. No control port means no `NEWNYM`: fresh circuits come from per-transaction
 SOCKS credentials. Hardening as above; `mem_limit: 256m`, `pids_limit: 128`.
 
 **i2pd** (pinned by digest). Peer transports bind **only to the egress interface**; the one listener on the
@@ -1204,26 +1217,32 @@ shell, never a general `virsh` pass-through, never the libvirt remote API.
 
 | Verb | Effect |
 |---|---|
-| `revert` | Revert the Workstation domain to the named clean snapshot and wait until the guest service answers. |
+| `reset` | Power off both domains, destroy any overlay, check the golden chain against its recorded measurements, create a fresh disposable overlay for each domain over the golden chain, start both, and wait until the guest service answers. It never reverts an internal snapshot and never starts a domain on anything but a newly created overlay. |
 | `fetch` | Run one allowed fetch inside the Workstation (the permit comes from the controller). |
+| `teardown` | Power off both domains and destroy both overlays, then recheck the golden chain. |
 | `screenshot` | Save a console screenshot to a host file for the maintainer. Not exposed to Claude (section 2, difference 1). |
-| `status` | Domain states, snapshot present, guest service ready. |
+| `status` | Domain states, golden-chain measurement result, overlay identity and state (present, destroyed, stale), guest service ready. |
 
 **Host as configuration.** The wrapper reads a config file (`KNIGHT_RIDER_WHONIX_CONFIG`): libvirt URI
-(`qemu:///system` or `qemu:///session`), Workstation and Gateway domain names, snapshot name (default
-`kr-clean`), the guest service's vsock port, per-verb timeouts, screenshot directory, and transport
-(`local` or `ssh`). Nothing in code assumes a particular machine, so the same tool works on a local host, the
-always-on box, or any KVM host.
+(`qemu:///system` or `qemu:///session`), Workstation and Gateway domain names, the **golden chain definition**
+(paths and recorded digests, 11.6) and the **overlay directory** (a directory that only the runtime identity
+can write and that never holds golden files), the guest service's vsock port, per-verb timeouts, screenshot
+directory, and transport (`local` or `ssh`). There is **no snapshot-name setting**. Nothing in code assumes a
+particular machine, so the same tool works on a local host, the always-on box, or any KVM host.
 
 **Operations.** `verified (read 2026-11-02)`, libvirt virsh manual (libvirt.org/manpages/virsh.html):
 
-- `snapshot-revert domain {snapshot | --current} [{--running | --paused}] [--force] [--reset-nvram]`, a
-  "destructive action"; "Since libvirt 7.10.0 the VM process is always restarted". This is the `revert`
-  operation: revert the Workstation to `kr-clean` with `--running`.
 - `screenshot domain [imagefilepath] [--screen screenID]`: "Takes a screenshot of a current domain console and
   stores it into a file." This is `screenshot`.
-- `snapshot-create-as` exists (taking the clean snapshot is a one-time maintainer step documented in the
-  install guide, not a verb).
+- Starting, powering off and defining domains use ordinary libvirt domain operations, with the disk element of
+  each domain pointing at a newly created overlay file whose backing file is the top of the golden chain.
+  Creating overlays is a qcow2 operation (`inferred`: the builder confirms the exact tooling and the libvirt
+  version's behavior for external overlays and records it). **`snapshot-revert` is not used for the clean state,
+  and snapshot names are not a configuration item**: an internal snapshot lives in the file the guest writes
+  and so cannot be a clean-state boundary (11.6). Whether libvirt's own external snapshot feature is a better
+  primitive is `unverified`.
+- Taking or rebuilding the golden chain is a one-time maintainer step documented in the install guide, not a verb
+  (11.6).
 
 `verified (read 2026-11-02)` (Whonix KVM page): Whonix on KVM is managed with `virsh`; the page recommends
 against enabling 3D acceleration ("increases the attack surface"), says virtiofs carries "higher host
@@ -1246,28 +1265,31 @@ KVM page "is only supported by the community".
 - No credentials for the controller to the host beyond that one key; nothing from the repo, the secrets
   store or the maintainer's tokens is ever present on the host side.
 
-**One session at a time, and a host lock.** The Whonix tier serves **one session at a time**. A second
-session request returns `busy`. (More than one session would need each session to own a distinct
-Workstation and Gateway pair; that is not designed for Phase 1.) The wrapper takes an exclusive **host lock**
-(a lock file held with `flock`, in a directory only the controller's user can write) around the whole
-sequence: revert both, boot, readiness check, fetch(es), teardown, stop and revert **both** the Workstation and
-the Gateway. The lock is released only when both domains are confirmed in the clean snapshot state (reverted,
-and stopped or ready as configured). This end-of-session sequence also runs on **every failure path**: a
-timeout, a sanitizer failure, a bad nonce, a framing violation, a guest crash, `kr_session_end`, idle expiry
-and controller shutdown. If a revert itself fails, the domains are powered off and both stay marked dirty.
-**Crash safety:** before any session work the wrapper writes a dirty marker for **each** domain (Workstation
-and Gateway) to a state file in its private directory, and clears each marker only after that domain's revert
-is confirmed. On start, and before accepting `status`, `screenshot` or `fetch`, a wrapper that finds either
-marker (or a stale lock) contains both domains (power off, revert) first. Tests with libvirt stubbed: mark the
-Gateway compromised mid-session and invoke session end (both reverted before the lock is released); kill the
-wrapper mid-session and restart (both contained before any verb is served); fail the Gateway revert (both
-stay powered off and dirty).
+**One transaction at a time, and a host lock.** The Whonix tier serves **one transaction at a time**
+(a transaction is one `kr_fetch` call with its redirect hops, 8.2). A second request returns `busy`. (More than
+one would need each transaction to own a distinct Workstation and Gateway pair; not designed for Phase 1.) The
+wrapper takes an exclusive **host lock** (a lock file held with `flock`, in a directory only the controller's
+user can write) around the whole sequence: `reset`, readiness check, `fetch`(es), `teardown`. The lock is
+released only when `teardown` is confirmed: both domains powered off, both overlays destroyed, and the golden
+chain rechecked against its record. This `teardown` also runs on **every failure path**: a timeout, a
+sanitizer failure, a bad nonce, a framing violation, a guest crash, the call returning, and controller
+shutdown. If a teardown step fails, the domains stay powered off and both stay marked dirty.
+**Crash safety:** before any work the wrapper writes a dirty marker for **each** domain (Workstation and
+Gateway) to a state file in its private directory, and clears each marker only after that domain's overlay is
+destroyed and the golden chain is rechecked. On start, and before accepting `status`, `screenshot` or `fetch`,
+a wrapper that finds either marker, a stale lock or any stale overlay file contains both domains first (power
+off, destroy stale overlays, recheck the golden chain). Tests with libvirt and files stubbed: mark the Gateway
+compromised mid-transaction and let the call return (both overlays destroyed before the lock is released);
+kill the wrapper mid-transaction and restart (stale overlays destroyed and the chain checked before any verb
+is served); fail a teardown step (both stay powered off and dirty); **static design tests:** the wrapper never
+invokes `snapshot-revert`, accepts no snapshot-name setting, and starts a domain only on an overlay it created
+in this reset.
 
 **Nonces on replies.** Each `fetch` carries a fresh `request_nonce` from the controller. The guest service
-echoes it and also returns a `boot_nonce` that the wrapper read from the guest right after the revert (a value
-the guest generates at boot and the wrapper stores for the session). The wrapper discards any reply whose
-nonces do not match the current request and boot, so a late reply from before a revert, or a reply from a
-different session, cannot be attributed to the current one.
+echoes it and also returns a `boot_nonce` that the wrapper read from the guest right after the reset (a value
+the guest generates at boot and the wrapper stores for the transaction). The wrapper discards any reply whose
+nonces do not match the current request and boot, so a late reply from before a reset, or a reply from a
+different transaction, cannot be attributed to the current one.
 
 ### 11.2 Running a fetch inside the Workstation
 
@@ -1333,25 +1355,25 @@ Gateway's Tor proxy); whether that is possible and sound is `unverified` (open q
 What the Whonix tier still gives, and does not give:
 
 - **Gives:** the real network address stays out of reach of a hostile page and of a taken-over Workstation,
-  by Whonix's design (the project's claim, not tested here); both VMs are stopped and reverted at session end
+  by Whonix's design (the project's claim, not tested here); both VMs are powered off and their overlays destroyed at the end of every transaction
   and on failures; no open shell and a closed verb set on the host; hostile bytes are parsed away from the
   host; a request log kept by the controller for every request it authorized.
 - **Does not give:** an enforced allowlist after Workstation compromise. Requests a compromised Workstation
   sends through the Gateway are not seen by the controller, not logged by it and not limited by it. Anyone
   choosing this tier for allowlist enforcement should choose the container tier instead.
 
-**Gateway state.** A revert of the Workstation does not reset the Gateway, and the Workstation can reach the
-Gateway. So a Workstation-originated attack on the Gateway could persist across sessions. Phase 1 handles
-this in two ways, and the persistence claim is narrowed to match:
+**Gateway state.** Resetting the Workstation does not by itself reset the Gateway, and the Workstation can reach
+the Gateway, so a Workstation-originated attack on the Gateway could persist if the Gateway kept state. Phase 1
+removes that persistence the same way for both VMs, and the persistence claim is narrowed to match:
 
-1. The wrapper reverts the Gateway to its own clean snapshot (`kr-clean-gw`) at the **end** of every session
-   and on every failure path (11.1), and again at the start, all under the same host lock, and rebuilds both snapshots from the Whonix
-   project's published images on a schedule the maintainer sets (the images are `verified (read 2026-11-02)`
-   to be the project's own qcow2 images per the Whonix KVM page). A Gateway revert discards Tor's cached
-   state, so the first fetch after it is slower (`inferred`).
-2. Clean snapshots are bound to recorded measurements (11.6).
-3. The tier notes state that anything outside the two VMs' disks (the host, the hypervisor, libvirt) is
-   not reset by this, and that the host is trusted (11.4).
+1. The Gateway has its own golden chain and its own disposable overlay, created in `reset` and destroyed in
+   `teardown` under the same host lock, on every transaction and on every failure path (11.1). The golden
+   chains are rebuilt from the Whonix project's published images on a schedule the maintainer sets (the images
+   are `verified (read 2026-11-02)` to be the project's own qcow2 images per the Whonix KVM page). A fresh
+   Gateway overlay discards Tor's cached state, so the first fetch is slower (`inferred`).
+2. The golden chains are bound to recorded measurements and are not writable at run time (11.6).
+3. The tier notes state that anything outside the two VMs' disks (the host, the hypervisor, libvirt) is not
+   reset by this, and that the host is trusted (11.4).
 
 ### 11.6 Pinning and measurements (Whonix tier)
 
@@ -1363,12 +1385,12 @@ The same rule as 9.8: nothing executable is trusted by name, and startup is refu
   project signs its KVM images and what to verify is `unverified` (not read); the builder reads the Whonix
   documentation first and records what was done.
 - **Immutable golden state and disposable overlays (external-snapshot lifecycle).** The clean state is a
-  **golden chain** of qcow2 files that nothing writes to at run time, and every session runs on a **fresh,
+  **golden chain** of qcow2 files that nothing writes to at run time, and every transaction runs on a **fresh,
   writable, disposable overlay** whose backing file is the top of the golden chain. This replaces the idea of
   reverting an internal snapshot in place (internal snapshots live in the same file the guest writes, so a
-  guest write could alter the clean state). `revert` therefore means: power off the domain, **destroy the
-  overlay**, create a new empty overlay on the golden chain, start the domain from it. `snapshot-revert` (7.2 of
-  the libvirt text quoted above) is not used for the clean state; whether the libvirt version in use offers a
+  guest write could alter the clean state). `reset` therefore means: power off the domain, **destroy the
+  overlay**, create a new empty overlay on the golden chain, start the domain from it. `snapshot-revert` is not
+  used for the clean state; whether the libvirt version in use offers a
   better primitive is `unverified` and the lifecycle above does not depend on it.
   - The golden chain (every file, in order) is owned by an identity other than the one QEMU, libvirt and the
     wrapper run as, read-only to them (or marked immutable), and **not writable at run time**. Only the
@@ -1385,22 +1407,22 @@ The same rule as 9.8: nothing executable is trusted by name, and startup is refu
     chain that grew, or a golden file that changed refuses to start and powers the domains off. Digesting large
     images takes time; a digest may be cached against a golden file's device, inode, size and change time only
     while the file is immutable to every runtime identity, and is recomputed whenever any of these differ
-    (`inferred`: acceptable cost for a one-session-at-a-time tier).
+    (`inferred`: acceptable cost for a one-transaction-at-a-time tier).
   - The same applies to the Gateway (its own golden chain and disposable overlay). A fresh Gateway overlay each
-    session also discards Tor's cached state, so the first fetch is slower (`inferred`).
+    transaction also discards Tor's cached state, so the first fetch is slower (`inferred`).
   **Acceptance test (libvirt and files stubbed, then once on a real disposable host with the maintainer's go):**
-  record the golden measurements; start a session; boot and modify the guest (write a sentinel file and change
-  an executable in the guest's filesystem); end the session; assert the golden chain is **byte-identical** to
+  record the golden measurements; start a transaction; boot and modify the guest (write a sentinel file and change
+  an executable in the guest's filesystem); end the transaction; assert the golden chain is **byte-identical** to
   the record; assert the overlay is destroyed (the file no longer exists and nothing references it); start the
-  next session and assert it starts from the sentinel-free golden state (the sentinel is absent, the executable
+  next transaction and assert it starts from the sentinel-free golden state (the sentinel is absent, the executable
   is the original). Also: substitute or mutate a golden file while preserving names, base image and XML (startup
-  refuses); a changed chain order; an added memory snapshot; an overlay that survives teardown (the session
-  does not start); and a stale overlay left by a crash (destroyed on the next start before anything is served).
+  refuses); a changed chain order; an added memory snapshot; an overlay that survives teardown (the next
+  transaction does not start); and a stale overlay left by a crash (destroyed on the next start before anything is served).
 - **Guest service:** `kr-guest-fetch` is installed from a build whose digest is recorded; the wrapper reads
   the running service's digest through the vsock hello before the first permit and refuses on mismatch. A
-  compromised guest could lie about this, which is why the check is a tripwire and not a boundary; the revert
-  to a measured snapshot is what resets it.
-- **Test:** substitute a different base image, a different domain XML, a different snapshot and a different
+  compromised guest could lie about this, which is why the check is a tripwire and not a boundary; starting
+  from a fresh overlay over the measured golden chain is what resets it.
+- **Test:** substitute a different base image, a different domain XML, a different golden chain (file, order or content) and a different
   guest service digest, with libvirt stubbed; each refuses startup.
 
 ## 12. Discovery lane interface (reserved; implemented in Phase 2)
@@ -1429,7 +1451,25 @@ to change when it arrives. The maintainer's approved record is exactly **livenes
 - **Discovery records are never fetchable or expandable.** No verb accepts a discovery record or its address
   as a fetch target, and no link found while recording a candidate creates another candidate. The only way a
   destination becomes fetchable is the maintainer promoting it into the allowlist file by hand.
-- **Where the candidate address comes from (reserved backend variant).** The controller never parses hostile
+- **Provenance does not survive sandbox compromise, so the lane stays disabled (decision, round 7).** The
+  claim "a candidate came from a link in the current allowlisted response" would be asserted only by the
+  fetcher, which is breakable: both its link list and its `candidate_list` come from the same sandbox, and the
+  public link entry carries no address, so the controller has no independent evidence that a target occurred in
+  the page. A compromised fetcher could name any valid off-list destination, create a matching off-list link slot
+  with a consistent nonce, digest and index, and make the controller mint a liveness capability for it, which
+  would be a constrained network-request oracle outside the page's links. The simplest design that makes the
+  claim true is **not to enable the lane on sandbox-asserted provenance**: discovery stays reserved and rejected
+  (`not_implemented`, and `candidate_list` rejected as `internal`) until a **trusted extractor** exists and has
+  its own review. A trusted extractor is a separate, narrowly scoped, **no-network verifier** that receives the
+  exact bounded response bytes from a component that is not the sandbox (the egress side that saw the
+  response, not `broker-front` or the fetcher), independently re-extracts the links, and confirms the indexed
+  target occurs in the response; only a target it confirms may mint a capability. Even then the liveness gate
+  runs under its own constrained discovery policy (one request, the discovery capability only, caps and rate
+  limits from gate #4). Until then the text below describes only the reserved shapes, and the `index` and
+  `response_digest` checks in it are consistency checks, not proof. **Adversarial test (when built):** the
+  backend invents, substitutes, reorders or duplicates targets while keeping its nonce, digest and indices
+  internally consistent, on a fixture page with no links, and zero candidates and zero capabilities result.
+- **Where the candidate address comes from (reserved backend variant, disabled as above).** The controller never parses hostile
   HTML itself (section 5), so it cannot extract links on its own. The address reaches it through a third closed
   backend variant, reserved for Phase 2 and **rejected as `internal` in Phase 1**: `candidate_list`
   `{variant: "candidates", job_nonce, response_digest (the raw digest of the response the links came from),
@@ -1439,7 +1479,8 @@ to change when it arrives. The maintainer's approved record is exactly **livenes
   diagnostic; held in controller memory for the run and erased; usable only to mint the single-use liveness
   capability; **never accepted for an ordinary fetch capability**, and **never accepted from a response produced
   by a discovery check** (the controller does not request candidates from those). A candidate must match a link
-  in the same response's sanitizer link list by `link_index` and be off-list, else it is dropped. This is a
+  in the same response's sanitizer link list by `link_index` and be off-list, else it is dropped (a
+  consistency check; provenance is established only by the trusted extractor above). This is a
   second, named exception to "no backend string outside sanitized content" (the first is the redirect target);
   the schema walk test asserts exactly these two.
   **End-to-end test (when built):** fixture page with one off-list link; assert exactly one internal candidate
@@ -1451,7 +1492,7 @@ to change when it arrives. The maintainer's approved record is exactly **livenes
   response's job nonce), canonical_target (the candidate as parsed by the controller's strict URL parser from the `candidate_list` target for a link in that response), extraction_proof (the index of the link in that response's sanitizer link list and the
   response's raw digest), capability (single-use, non-fetchable: it permits one liveness check and nothing
   else, and is not a fetch capability of 9.2)}`. It: never enters a model-facing response or a log; cannot be
-  supplied or influenced by the model (no verb takes it); expires when its response's session or run ends and is
+  supplied or influenced by the model (no verb takes it); expires when its transaction or run ends and is
   erased then; cannot be created from a discovery check's own response (the controller refuses to extract
   candidates from a response whose capability is a discovery capability); and exists only to produce the
   three-field record. The record's **key** is a keyed hash of `canonical_target` (same HMAC discipline as 8.1);
@@ -1476,8 +1517,7 @@ to change when it arrives. The maintainer's approved record is exactly **livenes
 | Links returned | 100 | 100 | sanitizer |
 | Redirect hops | 3 | 3 | controller |
 | Request URL length | 2,048 | 2,048 | controller |
-| Concurrent sessions / fetches | container 2 / 1 per session; Whonix 1 / 1 | 4 / 1 | controller |
-| Session idle / lifetime | 300 s / 1800 s | 900 s / 3600 s | controller |
+| Concurrent transactions | container 2; Whonix 1 | 4 | controller |
 | Fetcher memory, pids, cpu | 512m, 128, 1.0 | n/a | container runtime |
 | HTTP status line / header block / header count / one header | 256 B / 16 KiB / 64 / 4 KiB | same | `broker-front`, local gate |
 | Chunk-size line; chunk trailers | 32 B; rejected | same | `broker-front` |
@@ -1507,7 +1547,7 @@ change.
 ## 15. Build plan and tests (Phase 1)
 
 Order: (1) allowlist matcher and config loader; (2) response schema and controller second pass; (3)
-sanitizer; (4) request log and session table; (5) MCP server over a fake backend; (6) container tier
+sanitizer; (4) request log and transaction table; (5) MCP server over a fake backend; (6) container tier
 (`broker-egress`, `broker-front`, fetcher, compose file, filtering, pinning); (7) Whonix wrapper; (8) Tor Browser driver, only after section 10's
 conditions are met. A Daybreak-tier security review runs
 before anything is installed on a host (#1).
@@ -1550,9 +1590,9 @@ Tests are hermetic: no real Tor or I2P, no real proxy. A fake SOCKS5 and HTTP pr
   (container) and at the local gate (browser tier, when built), and the browser process is killed.
 - **Address hygiene:** `scripts/check-addresses.sh` already runs in CI; no fixture contains a real address.
 - **Whonix wrapper:** verb whitelist, rejection of unknown verbs and extra fields, no shell invocation (the
-  test patches the process spawner and asserts an argument list), peer-uid check, a second concurrent session gets `busy`, the host lock is held across revert, boot, readiness,
-  fetch, teardown and final revert, a reply with a stale request or boot nonce is discarded, Gateway revert at
-  session start, with libvirt stubbed.
+  test patches the process spawner and asserts an argument list), peer-uid check, a second concurrent transaction gets `busy`, the host lock is held across reset, readiness,
+  fetch and teardown, a reply with a stale request or boot nonce is discarded, the Gateway gets its own
+  overlay per transaction, with libvirt stubbed.
 
 ## 16. Open questions
 
@@ -1605,8 +1645,8 @@ All read on 2026-11-02 unless stated.
   `SocksPort`, `IsolateSOCKSAuth`, `SocksPolicy`, `ClientOnly`, `SafeSocks`, `AvoidDiskWrites`, `Sandbox`,
   `DNSPort`, `ControlPort`, `ClientOnionAuthDir` all present. verified.
 - i2pd configuration, docs.i2pd.website/en/latest/user-guide/configuration/ (undated). verified.
-- libvirt virsh manual, libvirt.org/manpages/virsh.html (undated; `snapshot-revert` text cites libvirt
-  7.10.0). verified.
+- libvirt virsh manual, libvirt.org/manpages/virsh.html (undated; `screenshot` syntax read; its `snapshot-revert` text, which cites libvirt 7.10.0, is no longer used by
+  the design). verified.
 - libvirt domain XML format, libvirt.org/formatdomain.html: Vsock section. verified.
 - Docker Compose file reference, docs.docker.com/reference/compose-file/networks/ and `/services/`. verified.
 - Whonix wiki, I2P (whonix.org/wiki/I2P) and KVM (whonix.org/wiki/KVM; the page text was truncated by the
