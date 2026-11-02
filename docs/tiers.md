@@ -17,13 +17,14 @@ Placeholders only: this repository has no real onion or I2P addresses.
 
 | | Tier 1: Tor Browser driven directly | Tier 2: container with Tor and i2pd | Tier 3: Whonix Gateway and Workstation |
 |---|---|---|---|
-| Isolation | Weakest. Trust boundary is the whole computer. | Middle. The fetcher has no route except through the two proxies. | Strongest of the three. Workstation reaches only the Gateway. |
+| Status in Phase 1 | **Unavailable** until a verified fail-closed interceptor exists | Available (build first) | Available (build second) |
+| Isolation | Weakest. Trust boundary is the whole computer. | Middle. The fetcher cannot reach Tor or i2pd at all; a trusted broker fetches only what the controller authorized. | Strongest against address leaks. Workstation reaches only the Gateway. The allowlist does **not** survive a Workstation compromise. |
 | Tor onion services | Yes | Yes | Yes |
 | I2P eepsites | Not by itself. Needs a separate I2P router, otherwise Tor-only. | Yes, through i2pd | Not in Phase 1. Possible only as an experimental, community-supported I2P-over-Tor setup. |
 | Reads pages that need JavaScript | Only if JavaScript is turned on, which we do not do | No (no browser) | Not in Phase 1 (same fetcher as Tier 2) |
-| Build order | Last | First | Second |
+| Build order | Last, and only after its gate | First | Second |
 | Setup cost | Low | Medium | High |
-| Fits | Someone who wants the least setup and accepts the weakest boundary | Most people: a good balance, and it covers both networks | Someone with a dedicated host who wants a hostile page kept off their real network address by design |
+| Fits | Not offered yet | Most people: a good balance, and it covers both networks | Someone with a dedicated host who wants a hostile page kept off their real network address by design |
 
 No tier is safe in the sense of "nothing can go wrong". The wiki's comparison matrix has no green column, not
 even for the setup that costs the most. Choosing a tier is choosing which failure you accept.
@@ -45,7 +46,15 @@ These apply to all three, and the wiki lists them for every setup:
 - **A tiny, careful allowlist is still your list.** The tool visits only what you wrote. A listed site can
   still serve a hostile page.
 
-## Tier 1: Tor Browser driven directly
+## Tier 1: Tor Browser driven directly (unavailable in Phase 1)
+
+**This tier ships disabled.** A security review of the design found that turning off scripts and images does
+not stop every stylesheet, font, refresh, navigation, download or browser-generated request, and that no one
+has verified a way to approve every browser request before it leaves. Until a **pinned browser version** and a
+**fail-closed pre-request interceptor** are built and verified at the proxy boundary (not just by what the
+browser shows), a page could cause an automatic off-list request to leave the browser. It also needs a
+streaming transport gate in front of the browser so size and time limits hold before hostile bytes reach it
+(`docs/design.md` section 10). Everything below describes the tier as it would be once those exist.
 
 **What it is.** The stock Tor Browser, driven by an automation library, with JavaScript off and images off,
 sending one exact page request at a time. The page source goes to a separate no-network sanitizer process
@@ -68,9 +77,8 @@ library's maintenance state is unknown (no release date on the page; its CI badg
 
 **What it protects.** The Tor Browser features the wiki lists: a circuit per site in the address bar,
 standardized window size and User-Agent, three security levels, and amnesic behavior like private tabs; and
-it hides your address from the site (`wiki`, citing Tor Project pages). Because we turn scripts and images
-off and drive one page at a time, a lot of fingerprinting surface and many tracker paths are closed
-(`inferred`).
+it hides your address from the site (`wiki`, citing Tor Project pages). Turning scripts and images off and driving one page at a time would close a lot of fingerprinting surface and many tracker paths
+(`inferred`), but that is defense in depth, not the enforcement; the interceptor is.
 
 **What it does not protect.**
 
@@ -82,6 +90,8 @@ off and drive one page at a time, a lot of fingerprinting surface and many track
 - Malware on the computer is not covered (`wiki` matrix).
 - The browser knows the real address, so a browser bug can reach it. A 2013 case is documented on the wiki's
   Tor page (`wiki`).
+- Even with the gate, the browser parses hostile bytes on your computer, and there is no broker or sandbox
+  between the browser and the network beyond the interceptor.
 - Parsing of the page happens in the sanitizer child process on the same computer, not in a sandbox.
   Mitigation: no network namespace and resource limits (`inferred`); it is still the same machine.
 - The automation library is third-party code that controls the browser.
@@ -94,9 +104,9 @@ someone whose threat model includes a hostile page reaching their real address, 
 
 ## Tier 2: container with a Tor daemon and i2pd
 
-**What it is.** Three containers on two networks (`docs/design.md` section 9): a **fetcher** on an internal
-network with no route out, a **tor** container and an **i2pd** container that sit on both the internal
-network and an egress network. The fetcher is an ordinary HTTP client, not a browser. It has a read-only
+**What it is.** Four containers on three networks (`docs/design.md` section 9): a **fetcher** on an internal
+network with no route out, a trusted **request broker** between the fetcher and the proxies, and a **tor**
+and an **i2pd** container that reach the internet through an egress network. The fetcher is an ordinary HTTP client, not a browser. It has a read-only
 root, no capabilities, resource limits, and no mount of your repos, secrets or tokens.
 
 **Networks.** Tor onion services: yes, through the Tor container. I2P eepsites: yes, through i2pd's HTTP
@@ -107,6 +117,15 @@ UDP SOCKS5 proxy option for SSU2; `inferred`: Tor provides no UDP SOCKS proxy, f
 
 **What it protects.**
 
+- **The allowlist survives a broken fetcher.** The fetcher parses hostile bytes, so it is treated as
+  breakable. It has no network path to Tor or i2pd. Everything it learns comes from a **broker** that accepts
+  one single-use capability from the controller and fetches exactly that scheme, host, port and path (one
+  canonical form used for both authorization and transmission), with compressed and decompressed byte limits and
+  a total deadline. A fetcher taken over by a page can ask the broker for the one page it was authorized to
+  fetch, once; it cannot ask for anything else (`docs/design.md` 9.2).
+- Tor and i2pd expose only one listener each to the broker, their peer transports are on the egress side only,
+  and each container has its own filter for an exact set of flows, proved by tests that enumerate listening
+  ports (`docs/design.md` 9.4 and 9.5).
 - A fetcher that tries to reach the internet, your LAN or DNS directly cannot: `kr_internal` is
   `internal: true`, which Docker describes as "an externally isolated network" (`verified (read 2026-11-02)`,
   Docker Compose networks reference). A program that "ignores Tor", the wiki's second threat, has no route.
@@ -127,12 +146,14 @@ UDP SOCKS5 proxy option for SSU2; `inferred`: Tor provides no UDP SOCKS proxy, f
   boundary is the container runtime and the kernel (`inferred` for the comparison of the two; the Docker
   and Podman security documentation was not read).
 - **Malware on the host** is not covered, as on every tier except those that run apart from the host.
+- **A bug in the broker.** It is small and does no HTML parsing, but it is trusted code. It is the component
+  that the security review of Phase 1 must read first.
 - **A bug in the image or the proxy software** (Tor, i2pd, the fetcher). They are pinned by digest, which
   stops silent changes and does not make them bug-free.
 - Pages that need JavaScript return little or nothing.
 
 **Cost.** Medium: a container runtime (Docker or Podman, open question 1 in the design), a Compose file from
-this repository, three pinned images, and host firewall rules for the egress network (`inferred`; install
+this repository, four pinned images, and host firewall rules for the egress network (`inferred`; install
 and test them on a plan, not on a live firewall). No extra hardware. First I2P fetch may be slow while the
 router builds tunnels (the design measures this in the first approved run).
 
@@ -142,7 +163,8 @@ boundary to be a hypervisor and are willing to run a dedicated host.
 
 ## Tier 3: Whonix Gateway and Workstation under KVM
 
-**What it is.** Two virtual machines from the Whonix project: a **Gateway** that runs Tor and a **Workstation**
+**What it is.** Two virtual machines from the Whonix project (one session at a time; a second request is told
+to wait): a **Gateway** that runs Tor and a **Workstation**
 that can reach only the Gateway. Under KVM/QEMU/libvirt. The Workstation is reverted to a clean snapshot
 before and after each session. You control it with a **closed verb set** on the host, never a shell: revert to
 the clean snapshot, run one allowed fetch, take a screenshot (for you only; it is not given to Claude). The
@@ -161,11 +183,22 @@ minutes to stabilize. So an I2P option on this tier is a later, experimental fla
 "Only connections through Tor are permitted", "DNS leaks are impossible", and malware with root in the
 Workstation "cannot discover the user's real IP address" (`wiki`, citing the Whonix overview, modified
 2026-09-19). This addresses the wiki's second and third threats (an app that ignores Tor; a bug that exposes the
-real address) in a way the browser-only model does not. Add to that the snapshot revert, so nothing a hostile
-page does persists, and the no-open-shell control wrapper.
+real address) in a way the browser-only model does not. Add to that the snapshot revert of the Workstation (and the Gateway at session start), so what a hostile
+page does inside the VMs does not persist, and the no-open-shell control wrapper.
 
 **What it does not protect.**
 
+- **The allowlist, once the Workstation is compromised. Stated plainly: on this tier the allowlist does not
+  survive a Workstation compromise.** Whonix is wired so the Workstation reaches Tor through the Gateway on its
+  own, so the code that fetches and parses is also in a position to send any request. The container tier puts a
+  broker in between; this tier does not (`docs/design.md` 11.5; whether a Whonix broker is possible is
+  unverified). What this tier still gives is the strongest guarantee here about your real address (the
+  project's claim, untested), a Workstation reset to a clean snapshot, a closed verb set with no shell, and
+  parsing away from your host. If you want the allowlist enforced against a taken-over fetcher, pick Tier 2.
+- **The Gateway is reverted too, but the host is not.** The Workstation revert does not reset the Gateway, and
+  the Workstation can reach it. So the control wrapper also reverts the Gateway to its own clean snapshot at the
+  start of each session and the images are rebuilt from the Whonix project's on a schedule. Anything outside
+  the two VMs' disks (host, hypervisor, libvirt) is not reset by this.
 - **The host.** Whonix's Warning page, per the wiki: the platform's security "is itself reliant upon the
   security of the host"; a compromised host compromises every Whonix VM; virtualization "cannot absolutely
   prevent the compromise of hardware, nor detect advanced malware" and VM escapes are possible; a dedicated
@@ -211,6 +244,10 @@ supported route.
 4. **Not sure?** Tier 2.
 
 ## What is verified and what is not
+
+Added after the security review of PR #11 (no new external facts were read for these changes): the broker,
+the unavailable status of Tier 1, the one-session rule for Tier 3 and the plain statement about the
+allowlist and Workstation compromise are design decisions, not sourced claims.
 
 Verified today (2026-11-02): the Docker Compose descriptions of `internal` and the container options; the
 i2pd and tor(1) option names and defaults quoted in `docs/design.md`; the virsh `snapshot-revert` and
