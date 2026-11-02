@@ -131,8 +131,15 @@ UDP SOCKS5 proxy option for SSU2; `inferred`: Tor provides no UDP SOCKS proxy, f
   effective capabilities, seccomp and LSM state, mounts and flags, namespaces, devices and limits from the host
   (`docs/design.md` 9.5). The request log stores keyed hashes (a key outside the repository, rotated with the
   log), never literal hosts, so a copied log cannot confirm a guessed destination (`docs/design.md` 8.1).
+- The egress gate writes the whole proxy-level destination itself (the Tor connect request or the I2P request
+  line) from the controller's capability and accepts nothing from the protocol stack upstream, so a taken-over
+  stack cannot steer the proxy to another destination. I2P over `https` is not supported in Phase 1 (unverified
+  whether the proxy supports it).
+- The allowlist file is checked through a no-follow descriptor walk and a content digest on every request, so
+  in-place edits show up. This does not protect against another process running as your own user: such a
+  process is inside the trusted boundary (accepted residual risk).
 - Every hostile boundary has bounded, incremental framing (status and header bytes, header count, message
-  and reply sizes, deadlines), and the container egress policy is an exhaustive allow-only-global-unicast rule
+  and reply sizes, the protocol stack's reply to the fetcher, which the fetcher checks itself, deadlines), and the container egress policy is an exhaustive allow-only-global-unicast rule
   for both address families that also blocks directly connected routes and infrastructure addresses
   (`docs/design.md` 9.2 and 9.4), with a test per address class.
 - Tor and i2pd expose only one listener each to the broker, their peer transports are on the egress side only,

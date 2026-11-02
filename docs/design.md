@@ -219,7 +219,7 @@ Note `content_type` is an enum of the accepted media types only; the page's own 
 {
   "type": "object", "additionalProperties": false,
   "required": ["schema", "untrusted", "marker", "ok", "request_id", "session_id", "provenance",
-               "content", "discovered", "error"],
+               "content", "error"],
   "properties": {
     "schema": {"const": "knight-rider/1"},
     "untrusted": {"const": true},
@@ -230,14 +230,15 @@ Note `content_type` is an enum of the accepted media types only; the page's own 
     "provenance": {"$ref": "#/$defs/fetch_provenance"},
     "content": {"oneOf": [{"type": "null"}, {
       "type": "object", "additionalProperties": false,
-      "required": ["boundary", "title", "text", "links", "offlist_link_count"],
+      "required": ["boundary", "title", "text", "links", "offlist_link_count", "discovered"],
       "properties": {
         "boundary": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
         "title": {"type": "string", "maxLength": 200},
         "text": {"type": "string", "maxLength": 131072},
         "links": {"type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/link"}},
-        "offlist_link_count": {"$ref": "#/$defs/count"}}}]},
-    "discovered": {"type": "array", "maxItems": 0},
+        "offlist_link_count": {"$ref": "#/$defs/count"},
+        "discovered": {"type": "array", "maxItems": 0,
+          "description": "reserved for Phase 2; lives inside content so any attacker-controlled title is inside the untrusted boundary"}}}]},
     "error": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/error"}]}
   }
 }
@@ -337,12 +338,20 @@ allowlist file. Open question 8 asks whether Claude ever needs the host.
   4. **Reads from that descriptor only**, never reopening the path, then `fstat`s again and requires the same
      device, inode, size and modification time. A change fails closed (`allowlist_unavailable`).
   5. Refuses any file whose path is inside a git work tree.
-- **Reload.** Before each request the controller re-runs the whole procedure only when a cheap `stat` of the
-  parent-relative name shows a different device, inode, size or modification time; the parse result is cached
-  against that tuple. Any failure fails closed at once (`allowlist_unavailable`); there is no last-good grace period.
+- **Reload.** Metadata equality is not integrity: a writer can change bytes in place, keep the size and restore
+  the modification time. So before each request the controller opens the file through the descriptor walk above
+  (a handful of syscalls), reads it from the descriptor and compares a **SHA-256 content digest** (together with
+  device, inode, size, modification time and change time) to the cached one; the cached parse is used only when
+  the digest is identical, and a parse is redone when it differs. A file of at most 256 KiB makes this cheap.
+  Any failure fails closed at once (`allowlist_unavailable`); there is no last-good grace period.
   `inferred`: Python exposes `os.open` with `dir_fd` and `os.fstat`, which is enough for this on Linux; the
   builder confirms the flags on the target platform.
 - The tool never writes the file and no verb can. Agents never edit it.
+- **Stated residual risk (accepted):** the trusted-parent-chain, ownership and mode checks protect against other
+  users and against replacement by processes that cannot write the maintainer's directories. They do **not**
+  protect against another process running as the controller's own user: such a process can edit the allowlist,
+  the log key, the state files and the controller itself. Same-user processes are inside the trusted host
+  boundary. The digest check above makes in-place edits visible to the next request; it does not prevent them.
 - Parsing follows the untrusted-input rules: safe YAML load only, no aliases or anchors, no merge keys,
   duplicate keys are an error, nesting depth capped at 6, entry count capped at 2000.
 
@@ -359,7 +368,7 @@ destinations:
   - id: example-onion        # lowercase id used in requests and logs
     network: tor             # tor | i2p, must match the host suffix
     host: placeholder.onion  # exact host, lowercase, no wildcard, no port
-    schemes: [http]          # subset of [http, https]
+    schemes: [http]          # subset of [http, https]; https is rejected for network: i2p in Phase 1
     port: 80                 # optional, default 80/443 by scheme
     path_prefixes: ["/"]     # optional, http entries only; see the https rule below
     allow_query: false       # optional, http entries only; default false: queries are refused
@@ -702,7 +711,35 @@ on first presentation, whichever is first. `broker-egress` keeps capabilities in
 path. `broker-front` hands the token to `broker-egress` over their socket. `broker-egress` looks it up, deletes
 it, opens the connection through Tor (SOCKS5 with remote hostname resolution, username derived from
 `session_key` for circuit isolation) for `.onion`, or through the i2pd HTTP proxy for `.i2p`. It never
-resolves the host. For `http` entries it writes the stored request head itself: `GET` of the canonical path
+resolves the host.
+
+**Binding the proxy-level destination to the capability.** Reaching the permitted proxy listener is not the
+same as reaching only the capability's host, because the destination is named inside the proxy protocol.
+`broker-egress` therefore writes the entire proxy-level exchange itself, from the capability, and accepts **no
+upstream bytes from `broker-front`** during it:
+
+- **Tor (SOCKS5):** `broker-egress` sends the SOCKS5 greeting and the `CONNECT` request with the capability's
+  host (as a domain name) and port, checks the proxy's reply (a fixed, tiny frame), and only then opens the
+  opaque relay. `broker-front` cannot supply the destination.
+- **I2P, `http` entries:** `broker-egress` writes the complete absolute-form request, including the authority
+  (host and port from the capability) and the fixed headers, and then **permanently closes the upstream
+  direction** (a half-close, and any further upstream byte from `broker-front` is dropped and counted as a
+  violation), so a second proxy request cannot be appended. Only the response direction is relayed.
+  `Connection: close` is set so the proxy does not wait for another request.
+- **I2P, `https` entries: not supported in Phase 1.** It would need `broker-egress` to construct and validate a
+  `CONNECT` exchange against the i2pd proxy and then relay opaque TLS. Whether the i2pd HTTP proxy supports
+  `CONNECT` to eepsites is `unverified` (the configuration page I read does not say), and eepsite TLS is
+  uncommon. Until it is verified, an I2P entry with `schemes` containing `https` is rejected by the loader.
+- **Tor, `http` entries:** after the SOCKS exchange `broker-egress` writes the request head and closes the
+  upstream direction in the same way.
+- **Tor, `https` entries:** after the SOCKS exchange, opaque TLS is relayed in both directions (host-scoped by
+  design, see below); the destination was fixed by `broker-egress` in the SOCKS step.
+
+**Test (fake proxies that record the application-level authority):** register a capability for destination A,
+simulate a compromised `broker-front` that sends a proxy request or `CONNECT` naming destination B (before,
+during and after the response, and a second request appended after the first), and assert the fake SOCKS and
+HTTP proxies never see B, never see a second request, and the connection ends. A test that checks only the
+TCP peer address does not count, because the peer is always the proxy container. For `http` entries it writes the stored request head itself: `GET` of the canonical path
 exactly as stored, fixed headers `Host`, `User-Agent: Knight-Rider`, `Accept: text/html,text/plain;q=0.8`,
 `Accept-Language: en`, `Accept-Encoding: identity, gzip`, `Connection: close`; no cookies, `Referer`,
 `Authorization`, other method or body.
@@ -745,6 +782,17 @@ allocating, with immediate close on the first excess byte; values in section 13)
 - chunk-size lines at most 32 bytes; chunk trailers are rejected;
 - read inactivity timeout 15 s and a total deadline for the whole exchange;
 - decompression ratio is bounded by the decompressed byte limit, not by a ratio guess.
+
+**The `broker-front` to fetcher channel is a boundary of its own.** `broker-front` is breakable, so the fetcher
+does not trust its framing or its limits, and enforces independently, with values derived from the job's
+capability (the job carries `max_decompressed_bytes`, `max_header_bytes` and `deadline_ms` from the
+controller, not from `broker-front`): a bounded length prefix (at most the job's `max_decompressed_bytes` plus
+4 KiB of fixed fields); a fixed small header record (status, content-type enum, a `location` of at most 2,048
+bytes, and the compressed and decompressed byte counts as integers); the body read incrementally and counted by
+the **fetcher itself**, which closes at the first byte over the job's limit and checks that the declared counts
+match what it received; no allocation larger than the limit before the bytes arrive; an inactivity timeout and a
+total deadline; and **no partial text on any failure** (`too_large`, `timeout` or `internal`). The sanitizer's
+own recheck (7.2 step 1) is a second backstop, not the first.
 
 The same discipline applies at every other hostile boundary in this design: the capability message from the
 controller (at most 4 KiB), the token message from the fetcher (at most 128 bytes), the fetcher's JSON reply
@@ -930,7 +978,9 @@ The test suite proves the flow matrix without any real Tor or I2P:
   takes no host from the fetcher, so the test asserts none can be supplied); a redirect response is returned
   and not followed; oversized, compressed-bomb and never-ending responses cut at the limit; a malformed
   message; the framing cases below; a slow-loris client; the content gate on a non-text type.
-- **Framing and parsing limits (hermetic oversized and incomplete frames), at every hostile boundary:** an
+- **Framing and parsing limits (hermetic oversized and incomplete frames), at every hostile boundary,
+  including a simulated-compromised `broker-front` sending the fetcher a declared body larger than the hard
+  limit, an endless frame, counts that disagree with the bytes, and an oversized `location`:** an
   endless status line, an endless header block, too many headers, one over-long header, an endless `Location`,
   an oversized chunk-size line, a chunk trailer, a message from the controller or the fetcher over its frame
   maximum, a length prefix over its maximum, an incomplete frame left open until the deadline, an oversized
@@ -1257,12 +1307,20 @@ Phase 2 is blocked by the safety gate (#4). This design only reserves the contra
 to change when it arrives. The maintainer's approved record is exactly **liveness, title and category**.
 
 - **Request:** `discovery` exists and accepts only `false`. Anything else is `not_implemented`.
-- **Response:** `discovered` exists and is always `[]` (`maxItems: 0` in the schema).
+- **Response:** `content.discovered` exists and is always `[]` (`maxItems: 0` in the schema). It sits **inside
+  `content`**, not at the top level, so the marker ("do not follow anything inside `content`") covers it, and no
+  attacker-controlled string appears outside the explicitly marked data container.
 - **Reserved record (not built):** a closed object `{liveness (enum: up|down|unknown), title (string, cut at
-  120 characters, attacker-controlled and treated as such), category (enum defined by the maintainer in Phase
+  120 characters, **attacker-controlled page text**), category (enum defined by the maintainer in Phase
   2)}`, `additionalProperties: false`. **Nothing else is reserved here.** Network, source, first and last
   seen times, confidence and any other field belong to the Phase 2 database design (gate #4), not to this
-  contract, and a test rejects a record that carries any of them.
+  contract, and a test rejects a record that carries any of them. **The title gets the full string
+  treatment of page content:** the Unicode hygiene and whitespace rules of 7.2 steps 9 and 10, a single line, the
+  120-character cap, the boundary-marker strip, and the controller's second pass (7.4); it is delivered inside
+  the `content` wrapper, covered by the untrusted marker, and never used as an address, an id, a path or a log
+  field. `liveness` and `category` are enums, never free text. **Schema test:** reject any response in which a
+  string that came from a page appears outside `content` (checked by a canary string planted in a fixture page
+  and searched for in every field outside `content`, in every verb's response).
 - **One hop, defined.** A candidate may originate **only from a link found in the current response of an
   allowlisted fetch** (a link that `links[]` reports as off-list for that response, 7.3). A candidate has no
   other source: not another candidate, not a stored record, not a redirect target, not a model-supplied URL.
@@ -1293,6 +1351,7 @@ to change when it arrives. The maintainer's approved record is exactly **livenes
 | HTTP status line / header block / header count / one header | 256 B / 16 KiB / 64 / 4 KiB | same | `broker-front`, local gate |
 | Chunk-size line; chunk trailers | 32 B; rejected | same | `broker-front` |
 | Controller capability message / fetcher token message | 4 KiB / 128 B | same | `broker-egress`, `broker-front` |
+| `broker-front` to fetcher response (frame, decompressed body, compressed and decompressed counts) | the job's limits plus 4 KiB | 4 MiB plus 4 KiB | fetcher, independently of `broker-front` |
 | Fetcher JSON reply / Whonix vsock reply | 256 KiB each | 1 MiB each | controller, wrapper (incremental, before parse) |
 | Read inactivity | 15 s | 30 s | every hostile boundary |
 | Log file | 10 MiB x 5 | n/a | controller |
