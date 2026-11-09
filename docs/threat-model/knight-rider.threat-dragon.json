@@ -1,0 +1,1026 @@
+{
+  "version": "2.6.2",
+  "summary": {
+    "title": "Knight Rider threat model",
+    "owner": "ChiefGyk3D",
+    "description": "Threat model of Knight Rider, a read-only, allowlist-only fetcher of Tor onion services and I2P eepsites for an AI consumer, in three isolation tiers (Tor Browser, container, Whonix). Drawn from issues #1, #2, #4 and #8 and the maintainer's wiki, before the design document exists; a draft for the maintainer and a cyber-tier review, not an audit. Narrative in docs/threat-model.md."
+  },
+  "detail": {
+    "contributors": [],
+    "diagrams": [
+      {
+        "id": 0,
+        "title": "Knight Rider data flow",
+        "diagramType": "STRIDE",
+        "cells": [
+          {
+            "id": "tb-ai",
+            "shape": "trust-boundary-box",
+            "data": {
+              "name": "TB1: consuming AI and client",
+              "description": "Outside the tool core. Reads results as data; may hold other tools; may be injected."
+            },
+            "position": {
+              "x": 20,
+              "y": 20
+            },
+            "size": {
+              "width": 210,
+              "height": 200
+            }
+          },
+          {
+            "id": "tb-core",
+            "shape": "trust-boundary-box",
+            "data": {
+              "name": "TB1/TB4: host-side core and control wrapper",
+              "description": "Outside the sandbox. Validates sandbox output as hostile; builds the envelope."
+            },
+            "position": {
+              "x": 250,
+              "y": 20
+            },
+            "size": {
+              "width": 260,
+              "height": 250
+            }
+          },
+          {
+            "id": "tb-config",
+            "shape": "trust-boundary-box",
+            "data": {
+              "name": "TB2: private configuration",
+              "description": "The allowlist file, read from a configured path."
+            },
+            "position": {
+              "x": 530,
+              "y": 20
+            },
+            "size": {
+              "width": 200,
+              "height": 120
+            }
+          },
+          {
+            "id": "tb-store",
+            "shape": "trust-boundary-box",
+            "data": {
+              "name": "TB3: request log and discovery storage",
+              "description": "Private, local, gitignored; strings derived from hostile pages."
+            },
+            "position": {
+              "x": 530,
+              "y": 160
+            },
+            "size": {
+              "width": 200,
+              "height": 230
+            }
+          },
+          {
+            "id": "tb-public",
+            "shape": "trust-boundary-box",
+            "data": {
+              "name": "TB8: public repository and issues",
+              "description": "Code, docs, placeholder examples. Anything public cannot be unwritten."
+            },
+            "position": {
+              "x": 750,
+              "y": 20
+            },
+            "size": {
+              "width": 200,
+              "height": 250
+            }
+          },
+          {
+            "id": "tb-sandbox",
+            "shape": "trust-boundary-box",
+            "data": {
+              "name": "TB7: sandbox guest (browser profile, worker container or Workstation)",
+              "description": "Runs the parser and sanitizer; breakable."
+            },
+            "position": {
+              "x": 20,
+              "y": 410
+            },
+            "size": {
+              "width": 220,
+              "height": 150
+            }
+          },
+          {
+            "id": "tb-daemon",
+            "shape": "trust-boundary-box",
+            "data": {
+              "name": "TB5: network daemon or Gateway",
+              "description": "The only part with a path to the networks."
+            },
+            "position": {
+              "x": 260,
+              "y": 410
+            },
+            "size": {
+              "width": 220,
+              "height": 150
+            }
+          },
+          {
+            "id": "tb-host",
+            "shape": "trust-boundary-box",
+            "data": {
+              "name": "TB7: host and hypervisor",
+              "description": "Outside the sandbox. Local machine now; later the always-on box or a Proxmox VM."
+            },
+            "position": {
+              "x": 20,
+              "y": 580
+            },
+            "size": {
+              "width": 460,
+              "height": 130
+            }
+          },
+          {
+            "id": "tb-net",
+            "shape": "trust-boundary-box",
+            "data": {
+              "name": "TB6: anonymity networks and services",
+              "description": "Tor and I2P, relays, floodfills, and everything a service sends."
+            },
+            "position": {
+              "x": 510,
+              "y": 410
+            },
+            "size": {
+              "width": 440,
+              "height": 300
+            }
+          },
+          {
+            "id": "tb-sync",
+            "shape": "trust-boundary-box",
+            "data": {
+              "name": "TB10: private synced configuration store and each copy",
+              "description": "The allowlist is deliberately synced here to other machines; copies, history and recovery copies persist."
+            },
+            "position": {
+              "x": 750,
+              "y": 290
+            },
+            "size": {
+              "width": 200,
+              "height": 100
+            }
+          },
+          {
+            "id": "tb-upstream",
+            "shape": "trust-boundary-box",
+            "data": {
+              "name": "TB9: upstream artifacts",
+              "description": "Tor Browser, Tor, i2pd, Whonix images, base images, dependencies."
+            },
+            "position": {
+              "x": 510,
+              "y": 730
+            },
+            "size": {
+              "width": 440,
+              "height": 100
+            }
+          },
+          {
+            "id": "a-ai",
+            "shape": "actor",
+            "data": {
+              "name": "Consuming AI (Claude, through a skill or MCP tool)",
+              "description": "Reads results as data; may be injected.",
+              "threats": []
+            },
+            "position": {
+              "x": 35,
+              "y": 80
+            },
+            "size": {
+              "width": 180,
+              "height": 70
+            }
+          },
+          {
+            "id": "a-localproc",
+            "shape": "actor",
+            "data": {
+              "name": "Local process or agent as the maintainer's user",
+              "description": "Same-user access to allowlist, log and config. Tampering is accepted residual risk (K04b).",
+              "threats": []
+            },
+            "position": {
+              "x": 35,
+              "y": 290
+            },
+            "size": {
+              "width": 190,
+              "height": 70
+            }
+          },
+          {
+            "id": "s-sync",
+            "shape": "store",
+            "data": {
+              "name": "Synced copies of the allowlist",
+              "description": "Private synced configuration store and each machine's copy, including the remote box.",
+              "threats": [],
+              "isALog": false
+            },
+            "position": {
+              "x": 765,
+              "y": 320
+            },
+            "size": {
+              "width": 170,
+              "height": 70
+            }
+          },
+          {
+            "id": "p-core",
+            "shape": "process",
+            "data": {
+              "name": "Tool core",
+              "description": "Single entry point, allowlist check, caps, envelope, logging.",
+              "threats": []
+            },
+            "position": {
+              "x": 265,
+              "y": 70
+            },
+            "size": {
+              "width": 170,
+              "height": 70
+            }
+          },
+          {
+            "id": "p-ctrl",
+            "shape": "process",
+            "data": {
+              "name": "Tier control wrapper",
+              "description": "Closed verb registry: AI-facing fetch and status; controller-only probe and revert; operator-only screenshot, log and paths. Hypervisor operations are a second closed list.",
+              "threats": []
+            },
+            "position": {
+              "x": 265,
+              "y": 170
+            },
+            "size": {
+              "width": 170,
+              "height": 70
+            }
+          },
+          {
+            "id": "s-allow",
+            "shape": "store",
+            "data": {
+              "name": "Allowlist (private file)",
+              "description": "Opened by descriptor; read once; never in the repository; agents never edit it.",
+              "threats": [
+                {
+                  "id": "t-k04b",
+                  "number": 15,
+                  "status": "Open",
+                  "severity": "High",
+                  "type": "Tampering",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "title": "K04b: Allowlist file substitution and same-user tampering",
+                  "description": "Asset at risk: default deny and what the maintainer researches. Actor class: anyone who can write the path or a parent; a process running as the maintainer. Prerequisites: write access to the path or a parent; same-user code execution (K02a gives it). Rank 15. Full entry: docs/threat-model.md, K04b.",
+                  "mitigation": "Partial. Against path substitution: absolute configured path; resolution is symlink-free at every component, either one constrained kernel call (no symlinks, beneath the start directory) or a descriptor-relative walk with fstat of each directory, else the platform is unsupported; final file opened relative to the verified parent descriptor; checks run on the opened descriptor (regular file, owned by the user, link count one) and the invariant is a subset rule by effective access, not mode bits: no effective writer outside the allowed principals (configured user, and the privileged identity by definition) on any component or the file, while the configured user need not write every ancestor and root-owned non-writable system directories pass; checkable as owner allowed, no group or other write bit, ACL with only base entries or extra entries granting no write outside the allowed set, no other write-granting mechanism; a component that cannot be evaluated refuses to load with a distinct error and never falls back to mode bits alone; parent directories checked; content read once from the descriptor and held in memory; digest logged; reload repeats the procedure; refuse a path inside a repository. Against same-user tampering: NOT mitigated. No outside-authority anchor is specified, so this is recorded as accepted residual risk. A signature verified against a key held by a different authority is the option, a design decision for #7. Verification: Planned tests in a scratch directory: symbolic link in every path position refused; parent replaced during resolution makes the load fail; link count above one refused; group-writable file and parent refused; fixture with safe-looking modes but an access-control list granting another identity write access (on the file and on a parent) must fail to load, as must an unevaluable permission mechanism (distinct error, no fallback); positive fixtures must load (ordinary user-owned restrictive file and directory beneath root-owned non-writable ancestors; base-entries-only ACL; extra ACL entry granting no write outside the allowed set) and the suite must fail against a stub loader that rejects everything; file in a git work tree refused; file replaced after open does not change the held allowlist; changed file changes the logged digest on reload. namei -m is a human diagnostic only, not proof of what an open traversed. Residual: Same-user tampering accepted. Reopen if an outside anchor is specified. Status is Open: the design is not built; every verification marked planned is a Phase 1 test."
+                }
+              ],
+              "isALog": false
+            },
+            "position": {
+              "x": 545,
+              "y": 60
+            },
+            "size": {
+              "width": 170,
+              "height": 70
+            }
+          },
+          {
+            "id": "s-log",
+            "shape": "store",
+            "data": {
+              "name": "Request log",
+              "description": "Exact schema; no bodies; allowlist digest.",
+              "threats": [
+                {
+                  "id": "t-k07",
+                  "number": 6,
+                  "status": "Open",
+                  "severity": "High",
+                  "type": "Information disclosure",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "title": "K07: Data leakage of the log and stored data leaving the machine",
+                  "description": "Asset at risk: the research history, and in Phase 2 service identifiers. Actor class: a backup or sync job, or a mistaken commit or paste. Prerequisites: a sync or backup job whose scope includes the directory, one mistaken command, or text that induces an injected AI to ask for the log. Rank 6. Full entry: docs/threat-model.md, K07.",
+                  "mitigation": "Partial. State directory outside any repository and every directory a sync or backup tool covers; effective paths resolved and printed at startup; refuse a path inside a git work tree; exact enumerated log schema (no bodies, query strings, cookies or headers; unknown fields rejected); bounded retention enforced by the tool; no AI-facing verb returns log entries, history or resolved paths (log inspection is operator-only, like screenshots; any AI status operation returns only the current request's status and aggregate health counters). Verification: Planned: a command prints resolved storage paths and the maintainer compares them with the exclusion lists of each sync and backup tool; schema test (extra field fails); retention test with aged fixtures; stat -c '%a %U' shows 600 files and 700 directory; test that a path in a git work tree is refused; verb-enumeration test (no AI-facing verb returns log entries, history or paths) and a hostile-consumer test driven by injected text. The repository address check is a K17 control only. Residual: The AI's own transcript is outside Knight Rider's storage; a new sync tool silently widens scope. Status is Open: the design is not built; every verification marked planned is a Phase 1 test."
+                },
+                {
+                  "id": "t-k07b",
+                  "number": 19,
+                  "status": "Open",
+                  "severity": "Medium",
+                  "type": "Information disclosure",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "title": "K07b: Data leakage of the log and stored data to a local same-user process",
+                  "description": "Asset at risk: the research history. Actor class: code running as the maintainer. Prerequisites: code execution as the user. Rank 19. Full entry: docs/threat-model.md, K07b.",
+                  "mitigation": "Partial. Modes 0600 and 0700; no bodies or headers; bounded retention; encrypted volume where available. Verification: Planned mode and schema checks as in K07. Residual: File modes cannot stop same-user reads; accepted, consistent with K04b. Status is Open: the design is not built; every verification marked planned is a Phase 1 test."
+                }
+              ],
+              "isALog": false
+            },
+            "position": {
+              "x": 545,
+              "y": 190
+            },
+            "size": {
+              "width": 170,
+              "height": 70
+            }
+          },
+          {
+            "id": "s-disc",
+            "shape": "store",
+            "data": {
+              "name": "Discovery records (Phase 2)",
+              "description": "Key: canonical destination. Payload: liveness, title, category. No other column, key, index, side table or seed state. Never an input to discovery.",
+              "threats": [
+                {
+                  "id": "t-k08",
+                  "number": 14,
+                  "status": "Open",
+                  "severity": "High",
+                  "type": "Tampering",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "title": "K08: Discovery fan-out past one hop, and second-order prompt injection through stored fields",
+                  "description": "Asset at risk: the Phase 2 scope decision and the consuming AI session. Actor class: a page author who places a lead or sets a title or short field. Prerequisites: a page containing a lead or a field; for the second-order case, a later read of the store. Rank 14. Full entry: docs/threat-model.md, K08.",
+                  "mitigation": "Partial. Persisted representation is declared in full: one collection keyed by canonical destination with payload liveness, title and category, and no other column, key, index, parent identifier, time, run identifier, seed flag, side table or sidecar file; the parent binding lives in controller memory for the run only; the only input to discovery is a link extracted in the current run from a fetch of an allowlisted destination; a stored record is never an eligible input and carries no seed state; probes extract no links; fields normalized, length-capped and stripped of control characters at write time; log escapes newlines and delimiters; every read returns stored strings in the K01 envelope as untrusted. Verification: Planned tests with the network stubbed: full-store dump test (schema introspection, every state file, journals and the log compared with the declared representation; any undeclared column, key, index, auxiliary record or seed state fails); graph fixture where allowlisted page A links to B and B links to C asserts exactly one request to B, none to C and no record for C; schema test that an extra field fails; test that a stored record cannot be passed to the discovery entry point; probes run only under the single-use run-bound capability from K04, each in its own fresh instance (sibling-candidate test: B plants state, D sees none); title with newline, fake log line, fake envelope and control characters stays one log line and is escaped on read. Residual: Plain-language instructions in a title pass. Gate #4 is not written; discovery must not run until it is. Status is Open: the design is not built; every verification marked planned is a Phase 1 test."
+                }
+              ],
+              "isALog": false
+            },
+            "position": {
+              "x": 545,
+              "y": 290
+            },
+            "size": {
+              "width": 170,
+              "height": 70
+            }
+          },
+          {
+            "id": "s-repo",
+            "shape": "store",
+            "data": {
+              "name": "Public repository and issues",
+              "description": "Address check in CI; placeholders only.",
+              "threats": [
+                {
+                  "id": "t-k17",
+                  "number": 9,
+                  "status": "Open",
+                  "severity": "High",
+                  "type": "Information disclosure",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "title": "K17: Data leakage into the public repository: addresses, allowlist content, unfixed detail",
+                  "description": "Asset at risk: repository cleanliness and the maintainer's safety. Actor class: a contributor or an agent drafting text. Prerequisites: a mistake. Rank 9. Full entry: docs/threat-model.md, K17.",
+                  "mitigation": "Implemented in part. scripts/check-addresses.sh over every tracked file in CI through tests/run.sh; placeholder-only example allowlist; SECURITY.md routes unfixed detail to the private tracker; this model names classes, not steps. Verification: Command: ./tests/run.sh prints 'all checks passed' and exits 0 (exists). Unit test: tests/test_check_addresses.sh. Residual: The check finds address-shaped strings, not an allowlist described in words; review stays human. Status is Open: the design is not built; every verification marked planned is a Phase 1 test."
+                }
+              ],
+              "isALog": false
+            },
+            "position": {
+              "x": 765,
+              "y": 70
+            },
+            "size": {
+              "width": 170,
+              "height": 70
+            }
+          },
+          {
+            "id": "a-contrib",
+            "shape": "actor",
+            "data": {
+              "name": "Repository contributor or reader",
+              "description": "Opens PRs and issues; reads everything public.",
+              "threats": []
+            },
+            "position": {
+              "x": 765,
+              "y": 170
+            },
+            "size": {
+              "width": 170,
+              "height": 70
+            }
+          },
+          {
+            "id": "p-worker",
+            "shape": "process",
+            "data": {
+              "name": "Fetch sandbox",
+              "description": "Tor Browser profile, worker container, or Whonix Workstation; parser and sanitizer run here.",
+              "threats": [
+                {
+                  "id": "t-k02a",
+                  "number": 2,
+                  "status": "Open",
+                  "severity": "Critical",
+                  "type": "Elevation of privilege",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "title": "K02a: T1 browser compromise reaches the user account",
+                  "description": "Asset at risk: the host account and everything it reaches (credentials, repositories, the Claude login). Actor class: a page author delivering one browser exploit. Prerequisites: one browser exploit, delivered by any page; light. Rank 2. Full entry: docs/threat-model.md, K02a.",
+                  "mitigation": "Partial. T1 runs only under a dedicated OS account with none of the maintainer's credentials, no access to the maintainer's home, agent sockets or session bus, no elevated rights; process confinement where available; the Tor client runs under a different identity from the browser (K03). T1 under the daily account is equal to no isolation. Verification: Planned, host-observed: from the host, enumerate the dedicated account's ids, groups, environment, descriptors, mounts, reachable sockets and readable files under the maintainer's home (expected none) and compare with a recorded expected set; fail on any addition. Planned test: the tool refuses T1 unless the current account is the configured dedicated one. Residual: Weakest tier, accepted by decision. Reopen if T1 is used under an account with credentials. Status is Open: the design is not built; every verification marked planned is a Phase 1 test."
+                },
+                {
+                  "id": "t-k02b",
+                  "number": 3,
+                  "status": "Open",
+                  "severity": "Critical",
+                  "type": "Elevation of privilege",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "title": "K02b: T2 worker breach, then container escape",
+                  "description": "Asset at risk: the host (and the real address if the daemon container is breached). Actor class: a page author with a browser exploit and then a runtime or kernel flaw. Prerequisites: a browser exploit plus a second, runtime-level flaw; heavy. Rank 3. Full entry: docs/threat-model.md, K02b.",
+                  "mitigation": "Partial. Rootless runtime; capabilities dropped; no new privileges; read-only root; size-limited tmpfs; default syscall filter; no runtime or host sockets, devices or directories; worker on an internal network; daemon container holds no secret; the inventory is closed for listening sockets and published ports (exact protocol, bind address, port, namespace and owning process; one extra listener, wildcard bind, host publication or alternate transport refuses startup). Worker breach alone gives the local proxy ports and forged output; escape gives the runtime's user on the host. Verification: Planned, host-observed positive inventory of the running worker and daemon containers (mounts, descriptors, namespaces, capability and no-new-privileges flags, syscall-filter mode, devices, interfaces, routes, listening sockets, published ports) compared with a recorded expected set; any extra item fails. The generated definition is compared too, but running state is what counts; nothing reported from inside the sandbox is trusted. Residual: An unpatched runtime or kernel flaw defeats this. Status is Open: the design is not built; every verification marked planned is a Phase 1 test."
+                },
+                {
+                  "id": "t-k12",
+                  "number": 16,
+                  "status": "Open",
+                  "severity": "Medium",
+                  "type": "Information disclosure",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "title": "K12: Ephemerality fails: state survives a run or links runs",
+                  "description": "Asset at risk: unlinkability of fetches and the clean state of the sandbox. Actor class: a prior hostile page, or a failed cleanup. Prerequisites: an earlier hostile page or a cleanup error. Rank 16. Full entry: docs/threat-model.md, K12.",
+                  "mitigation": "Partial. Lifecycle: one network transaction (exactly one fetch or one probe) per instance, each probe of a discovery operation in its own fresh instance, capabilities held in host memory; create or revert, host verification, one fetch, teardown; any failure poisons the instance until a verified new one exists. Each attested property names a host-controlled evidence source (host record of image and fresh-start identifiers, offline inspection of backing storage, container process table read from outside, host-held isolation token). Properties with no independent source (guest process list and profile identifier in a VM) are not attested and rest on destroy-and-recreate; this is stated as residual. Cleanup after the fetch is defense in depth. I2P linkability is outside the guarantee. Verification: Planned sibling-candidate test: A yields B and D, B plants state or poisons the result channel, D must run in a distinct verified-clean instance or be refused and see none of B's state. Planned tests on the real T1, T2 and T3 backends (T1: plant a profile change, cache entry, helper process and writable file; the next transaction needs a new host-observed profile identity and sees none; failure injected at every T1 lifecycle transition leaves it poisoned until a verified replacement exists, else T1's guarantee is weakened and recorded as residual) with state planted outside any guest-reported inventory (second writable volume, daemon directory, guest disk, background process) that must make the host-side check fail; failures injected at every lifecycle transition must leave the instance poisoned and block following fetches; the same transitions on a stub backend test the wrapper's state machine. Residual: I2P linkability through Tor stays; properties not independently observable are not attested; a hypervisor or host-inspection flaw (K02) defeats the rest. Status is Open: the design is not built; every verification marked planned is a Phase 1 test."
+                }
+              ]
+            },
+            "position": {
+              "x": 30,
+              "y": 450
+            },
+            "size": {
+              "width": 200,
+              "height": 70
+            }
+          },
+          {
+            "id": "p-daemon",
+            "shape": "process",
+            "data": {
+              "name": "Tor and I2P daemons or Gateway",
+              "description": "Network invariants observed at the enforcement point (K03).",
+              "threats": [
+                {
+                  "id": "t-k03",
+                  "number": 5,
+                  "status": "Open",
+                  "severity": "High",
+                  "type": "Information disclosure",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "title": "K03: Data leakage of the real IP or identity",
+                  "description": "Asset at risk: the maintainer's real network location and identity. Actor class: a page author, or a client bug or mis-wired network. Prerequisites: any page that triggers a request; a bug or a wiring mistake. Rank 5. Full entry: docs/threat-model.md, K03.",
+                  "mitigation": "Partial. Remote name resolution through the proxy; no external viewers or handlers; non-text types refused. Tier-specific invariants checked at the enforcement point: T1: with browser and Tor client as one account no host rule can tell them apart, so T1 cannot claim the invariant unless they run under distinct identities (separate accounts, namespaces or control groups) with only the Tor identity owning outside sockets and the browser reaching a local proxy only, else accepted residual; T2 worker has one interface with proxy routes only and no resolver, daemon container is the only egress and excludes the host, local network and link-local; T3 Workstation reaches only the Gateway, whose firewall passes Tor only. Accepted exposure: an i2pd router on the host or in T2 is visible to I2P peers directly; the alternative is I2P through Tor inside the Workstation with no stream isolation. Verification: Planned, outside the guest: T1 attempts of direct TCP, UDP, DNS, IPv6 and ICMP from the browser's own process identity to a destination the Tor identity may reach and to arbitrary destinations must all fail while the local proxy works (a capture of permitted relay destinations does not pass); T2 namespace entry from the host to list interfaces and routes, plus the host firewall and connection-tracking view; T3 bridge and Gateway firewall views. Negative tests for every interface and destination class (loopback, local network, link-local, metadata range, IPv6, ICMP, DNS on both transports); recording proxy shows remote name resolution. Residual: T1: any browser flaw can leak; all tiers: the local network sees Tor or I2P use; direct I2P peer visibility is accepted unless I2P over Tor is chosen. Status is Open: the design is not built; every verification marked planned is a Phase 1 test."
+                }
+              ]
+            },
+            "position": {
+              "x": 270,
+              "y": 450
+            },
+            "size": {
+              "width": 200,
+              "height": 70
+            }
+          },
+          {
+            "id": "p-host",
+            "shape": "process",
+            "data": {
+              "name": "Host and hypervisor",
+              "description": "Positive inventory of the sandbox is taken here (K02).",
+              "threats": [
+                {
+                  "id": "t-k02c",
+                  "number": 4,
+                  "status": "Open",
+                  "severity": "Critical",
+                  "type": "Elevation of privilege",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "title": "K02c: T3 Workstation, Gateway and hypervisor crossings",
+                  "description": "Asset at risk: the host; the real address if the Gateway is breached. Actor class: a page author with a browser exploit and then a VM-boundary or Gateway flaw. Prerequisites: a browser exploit plus a VM-boundary or Gateway flaw; heavy. Rank 4. Full entry: docs/threat-model.md, K02c.",
+                  "mitigation": "Partial. Domain definitions generated from a positive template and not editable from the guest; no shared folders, clipboard or display channel beyond the verb set, no device or USB passthrough; Workstation attached only to the internal network with the Gateway; guest agent speaks only the verb protocol. Workstation breach gives forged output (real address still hidden by design, an untested project claim); Gateway breach exposes the real address; a hypervisor escape reaches the host. Verification: Planned, host-observed: effective definition dumped from the hypervisor after start, hypervisor process descriptors and arguments, and bridge attachments compared with the expected set; the Workstation has one interface, and the only other member of its network is the Gateway; the Gateway's external interface is the only one with a route out. The Workstation-to-Gateway, Gateway-to-host and guest-to-host separations are tested independently. Residual: A hypervisor flaw defeats this; virtualization enlarges the trusted computing base. Status is Open: the design is not built; every verification marked planned is a Phase 1 test."
+                },
+                {
+                  "id": "t-k10",
+                  "number": 13,
+                  "status": "Open",
+                  "severity": "High",
+                  "type": "Elevation of privilege",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "title": "K10: The Whonix host question",
+                  "description": "Asset at risk: the host's credentials, including the Claude login if the box is shared. Actor class: a guest or hypervisor attacker, or the holder of the wrapper's hypervisor credential. Prerequisites: a hypervisor escape (heavy) or the wrapper credential in the wrong hands (light). Rank 13. Full entry: docs/threat-model.md, K10.",
+                  "mitigation": "Open. Prefer a host used only for these VMs; if the always-on box is shared, keep other credentials out of reach of the VM-running account or use a separate hypervisor host; the wrapper connects as a dedicated account with rights only on named domains over an authenticated encrypted channel; host is configuration; Proxmox would be a separate driver (unverified). Verification: Maintainer checklist before first run: credentials present on the host, account that runs the VMs. Enforcement-level negative tests with the wrapper's actual credential: operations on an unconfigured domain, network, storage pool, secret and a host-level action must each be denied by the hypervisor; effective permissions are compared with a closed expected set (exactly the hypervisor operations in the verb registry on named domains), startup refuses if broader, and the check fails if the controller can issue any hypervisor operation outside the set. Planned test: the wrapper also refuses a domain name not in its configuration. Residual: Virtualization enlarges the trusted computing base; this is the maintainer's decision, not a code fix. Status is Open: the design is not built; every verification marked planned is a Phase 1 test."
+                }
+              ]
+            },
+            "position": {
+              "x": 150,
+              "y": 620
+            },
+            "size": {
+              "width": 200,
+              "height": 70
+            }
+          },
+          {
+            "id": "a-operator",
+            "shape": "actor",
+            "data": {
+              "name": "Page author or service operator",
+              "description": "Controls page content, timing, size and redirects; may be third-party content on an allowlisted site.",
+              "threats": [
+                {
+                  "id": "t-k16",
+                  "number": 18,
+                  "status": "Open",
+                  "severity": "Medium",
+                  "type": "Spoofing",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "title": "K16: Intelligence integrity: lures, cloaked or poisoned pages",
+                  "description": "Asset at risk: the integrity of OSINT conclusions. Actor class: an operator who wants to mislead. Prerequisites: an operator who wants to mislead. Rank 18. Full entry: docs/threat-model.md, K16.",
+                  "mitigation": "Partial. Provenance and time in every result; content flagged operator-controlled; no automated action on content; discovered leads only recorded. Verification: Planned test: every result carries the provenance header. Maintainer review. Residual: Judgment stays human. Status is Open: the design is not built; every verification marked planned is a Phase 1 test."
+                }
+              ]
+            },
+            "position": {
+              "x": 530,
+              "y": 450
+            },
+            "size": {
+              "width": 200,
+              "height": 70
+            }
+          },
+          {
+            "id": "a-netadv",
+            "shape": "actor",
+            "data": {
+              "name": "Network adversary",
+              "description": "Watches both ends, runs relays or floodfills, controls an AS.",
+              "threats": [
+                {
+                  "id": "t-k14",
+                  "number": 21,
+                  "status": "Open",
+                  "severity": "Medium",
+                  "type": "Information disclosure",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "title": "K14: Network adversary: correlation, malicious relays or floodfills, honeypot operators",
+                  "description": "Asset at risk: unlinkability of the maintainer and a destination. Actor class: an observer of both ends or the operator of a relay, floodfill or allowlisted service. Prerequisites: position at both ends or a controlled relay; sustained effort. Rank 21. Full entry: docs/threat-model.md, K14.",
+                  "mitigation": "Accepted. Client-only (no onion service or hidden service); no long-lived services; few small requests; unpredictable timing; no logged-in behavior. Verification: Not testable in this repository; stated as a non-goal in the design. Residual: Accepted by the maintainer; reopen if the tool begins to publish or to run on a schedule. Status is Open: the design is not built; every verification marked planned is a Phase 1 test."
+                }
+              ]
+            },
+            "position": {
+              "x": 530,
+              "y": 600
+            },
+            "size": {
+              "width": 200,
+              "height": 70
+            }
+          },
+          {
+            "id": "a-upstream",
+            "shape": "actor",
+            "data": {
+              "name": "Upstream release source",
+              "description": "Browser, daemon and image publishers and their download paths.",
+              "threats": []
+            },
+            "position": {
+              "x": 530,
+              "y": 760
+            },
+            "size": {
+              "width": 200,
+              "height": 70
+            }
+          },
+          {
+            "id": "f-call",
+            "shape": "flow",
+            "source": {
+              "cell": "a-ai"
+            },
+            "target": {
+              "cell": "p-core"
+            },
+            "data": {
+              "name": "Tool call",
+              "description": "AI-facing verbs are exactly fetch and status; one destination per call; no free-form command text; no probe, screenshot or log verb.",
+              "threats": []
+            }
+          },
+          {
+            "id": "f-result",
+            "shape": "flow",
+            "source": {
+              "cell": "p-core"
+            },
+            "target": {
+              "cell": "a-ai"
+            },
+            "data": {
+              "name": "Sanitized result envelope",
+              "description": "Provenance header plus quoted untrusted text body. Result channel to the AI.",
+              "threats": [
+                {
+                  "id": "t-k01",
+                  "number": 1,
+                  "status": "Open",
+                  "severity": "High",
+                  "type": "Elevation of privilege",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "title": "K01: Prompt injection: page text aimed at the consuming AI",
+                  "description": "Asset at risk: the consuming AI session and everything its tools reach (repositories, tokens, shell). Actor class: a page author or any third party who can place text on a fetched page. Prerequisites: text on a fetched page; no credential, no exploit. Rank 1. Full entry: docs/threat-model.md, K01.",
+                  "mitigation": "Partial. Fixed envelope built by the tool with provenance and an untrusted-data statement; plain-text-only output with markup, hidden text, control, bidirectional and zero-width characters removed or made visible; no verb that writes, posts or follows a link; output cap; consumer-side advice to read results in a session with no write tools and return a short structured summary. Verification: Planned hermetic test: fixture corpus of page classes through the sanitizer (output has no markup or control characters, envelope intact and unique, cap holds, fake envelope text escaped); test that the fetch verb refuses a destination found only in page text; Daybreak-tier review of the envelope and sanitizer. Residual: Plain-language instructions survive any sanitizer; closing this depends on consumer-side privilege separation outside this repository. Status is Open: the design is not built; every verification marked planned is a Phase 1 test."
+                }
+              ]
+            }
+          },
+          {
+            "id": "f-allow",
+            "shape": "flow",
+            "source": {
+              "cell": "s-allow"
+            },
+            "target": {
+              "cell": "p-core"
+            },
+            "data": {
+              "name": "Allowlist read",
+              "description": "Descriptor-based read of the opened file; default deny; digest recorded.",
+              "threats": []
+            }
+          },
+          {
+            "id": "f-tamper",
+            "shape": "flow",
+            "source": {
+              "cell": "a-localproc"
+            },
+            "target": {
+              "cell": "s-allow"
+            },
+            "data": {
+              "name": "Allowlist write attempt",
+              "description": "Same-user write access; accepted residual risk.",
+              "threats": []
+            }
+          },
+          {
+            "id": "f-ctrl",
+            "shape": "flow",
+            "source": {
+              "cell": "p-core"
+            },
+            "target": {
+              "cell": "p-ctrl"
+            },
+            "data": {
+              "name": "Control verb and arguments",
+              "description": "Controller-to-guest verbs are exactly fetch, probe and revert, with validated arguments as argument vectors; derived from the verb registry in docs/threat-model.md.",
+              "threats": [
+                {
+                  "id": "t-k06",
+                  "number": 11,
+                  "status": "Open",
+                  "severity": "High",
+                  "type": "Elevation of privilege",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "title": "K06: Tool abuse: restricted verbs turned into a shell",
+                  "description": "Asset at risk: the host and the guest. Actor class: an injected AI choosing tool arguments, or a compromised guest. Prerequisites: control of a tool argument or of the guest. Rank 11. Full entry: docs/threat-model.md, K06.",
+                  "mitigation": "Partial. Closed verb registry (AI-facing fetch and status; controller-only probe and revert; operator-only screenshot, log, paths) with schemas, and argument and exposure tests generated from the registry so probe is covered; arguments passed as vectors, never shell strings; option-like values rejected; names of snapshots and domains from configuration; length limits; guest accepts only schema-valid messages; host treats guest output as untrusted. Verification: Planned test: hostile-argument fixtures against every verb in the registry (the test fails if a verb has no fixtures), rejected before any process starts, with a stub that fails if one is spawned; fuzz of the host-side guest-message parser. Residual: Parser bugs remain possible; keep the channel small and review it first. Status is Open: the design is not built; every verification marked planned is a Phase 1 test."
+                }
+              ]
+            }
+          },
+          {
+            "id": "f-drive",
+            "shape": "flow",
+            "source": {
+              "cell": "p-ctrl"
+            },
+            "target": {
+              "cell": "p-worker"
+            },
+            "data": {
+              "name": "Fetch request into the sandbox",
+              "description": "Destination plus caps. One fetch per sandbox instance; host verification of host-observable properties only; destroy and recreate for unobservable VM state; poisoned after any failure (K12).",
+              "threats": []
+            }
+          },
+          {
+            "id": "f-out",
+            "shape": "flow",
+            "source": {
+              "cell": "p-worker"
+            },
+            "target": {
+              "cell": "p-core"
+            },
+            "data": {
+              "name": "Text envelope out of the sandbox",
+              "description": "Guest-control and result channel (K11): one length-prefixed frame per fetch with the maximum enforced before allocation or body read, a deadline, and rejection of trailing, repeated, unknown, duplicate, missing or forbidden data; closed schema with one variant per (verb, outcome), no optional fields and no free-form diagnostic field (fetch ok: v, verb, outcome, text, text_len, guest_truncated; fetch refused_type or failed: v, verb, outcome; probe up: v, verb, liveness, title, category; probe down or timeout: v, verb, liveness; revert ok or failed: v, verb, outcome); host-owned provenance (destination, network, time, response byte count, hops, error text, allowlist digest, request identifier); any error returns a fixed host-generated message with no page-derived bytes.",
+              "threats": [
+                {
+                  "id": "t-k11",
+                  "number": 17,
+                  "status": "Open",
+                  "severity": "Medium",
+                  "type": "Tampering",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "title": "K11: Hostile bytes parsed in the core, and the sandbox-to-host result channel",
+                  "description": "Asset at risk: the host process that receives sandbox output. Actor class: a page author or a malformed server response. Prerequisites: a page or response. Rank 17. Full entry: docs/threat-model.md, K11.",
+                  "mitigation": "Partial. Parse and sanitize inside the sandbox; memory-safe language and maintained parser; limits on nesting, size and decompression ratio; unknown encodings refused. Result channel fails closed: one length-prefixed frame, maximum enforced before allocation or body read, deadline, trailing or repeated frames rejected, closed schema with one variant per (verb, outcome) in the model, required fields listed and every other field forbidden, no optional fields (fetch ok: v, verb, outcome, text, text_len, guest_truncated; fetch refused_type or failed: v, verb, outcome; probe up: v, verb, liveness, title, category; probe down or timeout: v, verb, liveness; revert: v, verb, outcome; no free-form diagnostic field; text_len checked only against the text's byte length; frame length prefix authoritative; unknown, duplicate, missing or mistyped fields fail, valid UTF-8, length match), provenance (destination, network, time, response byte count, hops, error text, allowlist digest) host-owned, and any sanitizer failure returns a fixed host-generated error with no page-derived bytes and poisons the sandbox. Verification: Planned schema-generated test: for every (verb, outcome) variant, a positive case, required fields absent, duplicated, mistyped and out-of-bound, every forbidden field present (for example text on a failed fetch, title on a probe that is down), and an extra plausibly named field must all be rejected. Planned tests from a hostile guest stub: oversize length (and no near-maximum allocation), length mismatch, unterminated frame, trailing bytes, two frames, duplicate, unknown, missing and mistyped fields, invalid UTF-8, crash or timeout after partial output; each rejected with the fixed error. Plus fuzz and bomb tests for the in-sandbox parser. Residual: A sandbox-contained parser bug can still forge output. Status is Open: the design is not built; every verification marked planned is a Phase 1 test."
+                }
+              ]
+            }
+          },
+          {
+            "id": "f-proxy",
+            "shape": "flow",
+            "source": {
+              "cell": "p-worker"
+            },
+            "target": {
+              "cell": "p-daemon"
+            },
+            "data": {
+              "name": "Proxied request",
+              "description": "Local proxy with remote name resolution.",
+              "threats": []
+            }
+          },
+          {
+            "id": "f-net",
+            "shape": "flow",
+            "source": {
+              "cell": "p-daemon"
+            },
+            "target": {
+              "cell": "a-operator"
+            },
+            "data": {
+              "name": "Request on the network",
+              "description": "Tor or I2P traffic to the destination.",
+              "threats": [
+                {
+                  "id": "t-k13",
+                  "number": 20,
+                  "status": "Open",
+                  "severity": "Medium",
+                  "type": "Information disclosure",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "title": "K13: Data leakage by distinguishability: the tool is spotted or cloaked against",
+                  "description": "Asset at risk: unlinkability and the quality of results. Actor class: an operator who profiles visitors. Prerequisites: an operator who profiles visitors. Rank 20. Full entry: docs/threat-model.md, K13.",
+                  "mitigation": "Partial. Stock browser settings where possible; one profile per network; jittered cadence and low request count; accept that a text-only reader differs from a person. Verification: Manual review only (inferred); no test claims this. Residual: Accepted in part. Status is Open: the design is not built; every verification marked planned is a Phase 1 test."
+                }
+              ]
+            }
+          },
+          {
+            "id": "f-page",
+            "shape": "flow",
+            "source": {
+              "cell": "a-operator"
+            },
+            "target": {
+              "cell": "p-worker"
+            },
+            "data": {
+              "name": "Page bytes",
+              "description": "Hostile content: text, markup, oversize, redirects.",
+              "threats": [
+                {
+                  "id": "t-k04",
+                  "number": 8,
+                  "status": "Open",
+                  "severity": "High",
+                  "type": "Spoofing",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "title": "K04: Allowlist matching bypass, redirect, unbrokered page-initiated requests, or widening by persuasion",
+                  "description": "Asset at risk: default deny. Actor class: a page author (look-alike, redirect, persuasion). Prerequisites: a parser difference or redirect; a plausible message. Rank 8. Full entry: docs/threat-model.md, K04.",
+                  "mitigation": "Partial. One canonical host, port and scheme held as an immutable canonical destination object that dispatch consumes instead of the original string (no second parse); exact match; unparseable input rejected; redirects re-checked per hop and capped; broker invariant: every request class (navigation, redirect, subresource, prefetch, refresh, helper-process request, discovery probe) is authorized against the allowlist before dispatch and unbrokerable classes are disabled (T1 cannot guarantee this against a compromised browser); no verb edits the allowlist; promotion is a human act outside any AI-callable tool; denial text gives no hint to widen. The broker checks one of exactly two capabilities: a fetch needs an allowlist match; a one-hop probe needs a single-use, run-bound capability issued by the controller for a canonical link taken from the current response of an allowlisted fetch, permitting only the bounded liveness, title and category probe (no link extraction, no fetch, no seeding). Stored, sibling, earlier-run and arbitrary destinations hold no capability. Verification: Planned authorization-to-dispatch test: the tuple the broker authorized, the tuple in the redirect or probe capability and the tuple the proxy observes leaving must be equal, with a failure on any mismatch, second parse or unauthorized request; planned test: table of hostile destination forms denied and valid forms passed; redirect-to-forbidden and loop tests; test that no tool verb writes the allowlist path; request-class fixture where an allowlisted document tries each request class toward a forbidden destination and the proxy observes zero dispatches for it; probe-capability tests: the candidate is probed exactly once, and a second probe, arbitrary destination, stored lead, sibling lead, earlier-run lead or probe used as a fetch each fail with zero network observation. Residual: Judgment of the maintainer on persuasion; reopen if the format gains wildcards. Status is Open: the design is not built; every verification marked planned is a Phase 1 test."
+                },
+                {
+                  "id": "t-k05",
+                  "number": 10,
+                  "status": "Open",
+                  "severity": "High",
+                  "type": "Information disclosure",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "title": "K05: Abusive content met, stored or transcribed",
+                  "description": "Asset at risk: the maintainer's legal and personal safety. Actor class: no attacker needed; any fetched page. Prerequisites: fetching a page. Rank 10. Full entry: docs/threat-model.md, K05.",
+                  "mitigation": "Partial. Owned by the Phase 2 safety gate (#4): abuse filter, stop-and-report, purge, reporting channel. Phase 1: text only, no images or files, caps, no page body persisted, size-limited tmpfs destroyed at end of run. The consumer transcript is outside Knight Rider's storage. Verification: Planned test: a run leaves no page body on any persistent path and non-text types are refused. The gate's own checks belong to #4, not yet approved. Residual: Gate not yet written; discovery must not run until it is. Transcript retention cannot be controlled from here. Status is Open: the design is not built; every verification marked planned is a Phase 1 test."
+                },
+                {
+                  "id": "t-k15",
+                  "number": 22,
+                  "status": "Open",
+                  "severity": "Low",
+                  "type": "Denial of service",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "title": "K15: Resource exhaustion by a page or server",
+                  "description": "Asset at risk: availability, disk and quota. Actor class: a page author or a slow or hostile server. Prerequisites: a page or server. Rank 22. Full entry: docs/threat-model.md, K15.",
+                  "mitigation": "Partial. Byte cap enforced at the response-ingress point before buffering, decompression, parsing or browser caching (client closes or cancels after at most cap plus bounded framing overhead); a wire limit before decompression and a decoded limit with a ratio limit during it, either ending the transfer; declared peak memory and temporary storage bounds; wall-clock cap per request and run; redirect cap; concurrency limit; text-type allowlist; size-limited tmpfs; kill and revert on breach. Verification: Planned test against a stub server that streams forever, trickles, loops and sends a bomb; each stops with a distinct error; ingress observation: the stub sends well beyond the limit and bytes are counted at the ingress enforcement point, not in the sanitizer output (close or cancel within cap plus declared framing overhead, memory and temporary storage within declared bounds); wire and decoded limits tested separately. Residual: Low. Status is Open: the design is not built; every verification marked planned is a Phase 1 test."
+                }
+              ]
+            }
+          },
+          {
+            "id": "f-host",
+            "shape": "flow",
+            "source": {
+              "cell": "p-worker"
+            },
+            "target": {
+              "cell": "p-host"
+            },
+            "data": {
+              "name": "Isolation boundary",
+              "description": "Browser sandbox, container runtime, hypervisor.",
+              "threats": []
+            }
+          },
+          {
+            "id": "f-log",
+            "shape": "flow",
+            "source": {
+              "cell": "p-core"
+            },
+            "target": {
+              "cell": "s-log"
+            },
+            "data": {
+              "name": "Log write",
+              "description": "Enumerated fields only; page-derived strings escaped.",
+              "threats": []
+            }
+          },
+          {
+            "id": "f-disc",
+            "shape": "flow",
+            "source": {
+              "cell": "p-core"
+            },
+            "target": {
+              "cell": "s-disc"
+            },
+            "data": {
+              "name": "Discovery write",
+              "description": "Destination key plus three payload fields; no parent, time or run identifier persisted; probe runs under a single-use run-bound capability.",
+              "threats": []
+            }
+          },
+          {
+            "id": "f-upstream",
+            "shape": "flow",
+            "source": {
+              "cell": "a-upstream"
+            },
+            "target": {
+              "cell": "p-worker"
+            },
+            "data": {
+              "name": "Images and binaries",
+              "description": "Pinned by policy; provenance verified separately.",
+              "threats": [
+                {
+                  "id": "t-k09",
+                  "number": 12,
+                  "status": "Open",
+                  "severity": "High",
+                  "type": "Tampering",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "title": "K09: Supply chain: browser, daemons, images and dependencies",
+                  "description": "Asset at risk: the sandbox and, through K02, the host. Actor class: a compromised or neglected upstream release or download path, or a repository contributor or compromised repository path changing an artifact, its digest and the recorded signer together. Prerequisites: an upstream compromise, neglect of updates, or (repository variant) write access to the repository. Rank 12. Full entry: docs/threat-model.md, K09.",
+                  "mitigation": "Partial. Two separate controls. Parse-and-fail pinning: a script parses every artifact reference and fails unless each is referenced by digest or by version plus an expected digest in a pin file; a tag-only, floating or unparseable reference fails. Provenance verification, separate: signature verifies against a signer identity in a separate trust anchor (different file and change authority from the pin manifest: designated-maintainer review enforced on its path, digest recorded out of band and compared at every start and in CI; a pin change cannot introduce a new signer; if one party controls repository write access, the anchor and the out-of-band record the separation is procedural only and accepted as residual), content matches the recorded digest, build provenance checked where published, and the pin's date is within a maximum age. Run-time binding: at every start, before any sandbox exists, every effective artifact resolved from runtime configuration (image, browser executable, daemon binaries, VM disk and snapshot, dependencies) is compared by content digest and identity with the approved pin manifest, and the comparison is repeated against the running instance before the first fetch; missing, mutable, unverifiable or mismatched artifacts refuse startup. Vulnerability scanning stays as a separate signal and is not evidence of provenance. Verification: Planned run-time binding test: pin A and configure B (different image digest, older VM disk, different executable); startup must fail before sandbox creation, and a configuration that selects A while the runtime runs B must refuse the first fetch, for each artifact class. Planned anchor tests: artifact, digest and signer changed together with the anchor unchanged must fail even if correctly signed by the new key; anchor edited without the out-of-band record must fail at start and in CI; approved anchor change plus record update passes; a read-only query of repository rules shows the review requirement on the anchor path. Planned: scripts/check-pins.sh exits 0 on the real tree and non-zero on a fixture with one digest-pinned and one tag-only reference; tests that an expired pin, a digest mismatch and a signature that does not match the recorded fingerprint each fail (stubs, no network). Residual: A compromised signing key or a zero-day. Status is Open: the design is not built; every verification marked planned is a Phase 1 test."
+                }
+              ]
+            }
+          },
+          {
+            "id": "f-observe",
+            "shape": "flow",
+            "source": {
+              "cell": "a-netadv"
+            },
+            "target": {
+              "cell": "p-daemon"
+            },
+            "data": {
+              "name": "Traffic observation",
+              "description": "Position at both ends or a controlled relay.",
+              "threats": []
+            }
+          },
+          {
+            "id": "f-allowsync",
+            "shape": "flow",
+            "source": {
+              "cell": "s-allow"
+            },
+            "target": {
+              "cell": "s-sync"
+            },
+            "data": {
+              "name": "Allowlist sync",
+              "description": "The intended crossing of the private allowlist; disclosure by sync-account compromise, misconfigured sharing, history and recovery copies, or printed contents (K18).",
+              "threats": [
+                {
+                  "id": "t-k18",
+                  "number": 7,
+                  "status": "Open",
+                  "severity": "High",
+                  "type": "Information disclosure",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "title": "K18: Data leakage of the private allowlist through its own sync",
+                  "description": "Asset at risk: the allowlist, which reveals the maintainer's research targets, in every synced copy. Actor class: a party who gains the sync account or any copy, a misconfiguration, or a step that prints the file. Prerequisites: compromise or misconfiguration of the sync channel or any copy; or a careless print of the file. Rank 7. Full entry: docs/threat-model.md, K18.",
+                  "mitigation": "Partial. One canonical private path outside every checkout and the state directory; synced only through the private synced configuration store, private, access-limited, strongly authenticated, minimum accounts and machines, optionally encrypted before it enters the store; each copy mode 0600 in a 0700 directory owned by the account that runs the tool; remote box read path is that account only and its backups exclude the path or are private and encrypted; the tool never prints an entry (logs carry only the digest), agents never read or paste the file, no real entry in any PR, issue, commit or fixture. The sync provider and account are trusted; existing history and recovery copies are treated as permanent. Verification: Planned: operational readiness check that inventories the effective remote destinations and sharing state of the sync mechanism read-only, compares with a recorded approved private scope and fails if the allowlist is synced anywhere outside it; per-machine mode, owner and other-tool coverage check; sentinel test (a distinctive placeholder entry must appear in no output, log, status, error or test artifact across every verb and failure mode); repository check for real entries. Residual: Trust in the sync provider and account; existing history and recovery copies; physical access to a machine with a copy. Status is Open: the design is not built; every verification marked planned is a Phase 1 test."
+                }
+              ]
+            }
+          },
+          {
+            "id": "f-repo",
+            "shape": "flow",
+            "source": {
+              "cell": "a-contrib"
+            },
+            "target": {
+              "cell": "s-repo"
+            },
+            "data": {
+              "name": "Commit, issue, PR (publication path)",
+              "description": "Anything public cannot be unwritten.",
+              "threats": []
+            }
+          },
+          {
+            "id": "f-sync",
+            "shape": "flow",
+            "source": {
+              "cell": "s-log"
+            },
+            "target": {
+              "cell": "s-repo"
+            },
+            "data": {
+              "name": "Backup or sync of stored data",
+              "description": "The external-disclosure path for the log and records (K07).",
+              "threats": []
+            }
+          }
+        ]
+      }
+    ],
+    "diagramTop": 1,
+    "reviewer": "",
+    "threatTop": 22
+  }
+}
