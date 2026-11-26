@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: Apache-2.0
+# Keeps docs/threat-model/*.threat-dragon.json well formed and complete
+# (ChiefGyk3D/git-your-ship-together, threat-model.yml). ai-paths is empty until the skill or MCP tool
+# exists; once it does, name its paths here so a change to the AI surface must change the model too.
+name: Threat model
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  threat-model:
+    uses: ChiefGyk3D/git-your-ship-together/.github/workflows/threat-model.yml@f344c638e1316d43514a41e4a22f172583c271fc # v1.26.0
+    permissions:
+      contents: read
+    with:
+      required-topics: prompt injection, data leakage, tool abuse
